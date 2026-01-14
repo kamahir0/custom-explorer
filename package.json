@@ -76,54 +76,54 @@
         {
           "command": "customExplorer.addRootGroup",
           "when": "view == my-favorites-view",
-          "group": "navigation"
+          "group": "navigation@1"
         },
         {
           "command": "customExplorer.collapseAll",
           "when": "view == my-favorites-view",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "customExplorer.expandAll",
           "when": "view == my-favorites-view",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
           "command": "customExplorer.addGroup",
           "when": "view == my-favorites-view && viewItem == group",
-          "group": "inline"
+          "group": "inline@1"
         },
         {
           "command": "customExplorer.collapseRecursive",
           "when": "view == my-favorites-view && viewItem == group",
-          "group": "inline"
+          "group": "inline@2"
         },
         {
           "command": "customExplorer.expandRecursive",
           "when": "view == my-favorites-view && viewItem == group",
-          "group": "inline"
+          "group": "inline@3"
         },
         {
           "command": "customExplorer.removeEntry",
           "when": "view == my-favorites-view",
-          "group": "inline"
+          "group": "inline@4"
         },
         {
           "command": "customExplorer.addGroup",
           "when": "view == my-favorites-view && viewItem == group",
-          "group": "1_modification"
-        },
-        {
-          "command": "customExplorer.removeEntry",
-          "when": "view == my-favorites-view",
-          "group": "1_modification"
+          "group": "1_modification@1"
         },
         {
           "command": "customExplorer.renameEntry",
           "when": "view == my-favorites-view",
-          "group": "1_modification"
+          "group": "1_modification@2"
+        },
+        {
+          "command": "customExplorer.removeEntry",
+          "when": "view == my-favorites-view",
+          "group": "1_modification@3"
         }
       ]
     }
