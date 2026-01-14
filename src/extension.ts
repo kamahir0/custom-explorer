@@ -14,11 +14,15 @@ interface MyNode {
 export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new CustomTreeDataProvider(context);
 
-    const treeView = vscode.window.createTreeView('my-favorites-view', {
+    const treeView = vscode.window.createTreeView('custom-explorer-view', {
         treeDataProvider: treeDataProvider,
         dragAndDropController: treeDataProvider, 
         canSelectMany: true
     });
+
+    if (vscode.workspace.name) {
+        treeView.title = vscode.workspace.name;
+    }
 
     // --- コマンド登録 ---
 
