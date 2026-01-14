@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as fs from 'fs'; // ★追加: ファイルシステム操作用
+import * as fs from 'fs';
 
 // ■ データ構造の定義
 interface MyNode {
@@ -26,36 +26,66 @@ export function activate(context: vscode.ExtensionContext) {
         treeView.title = vscode.workspace.name;
     }
 
-    // --- コマンド登録 ---
+    // ★ 追加機能: エディタでファイルを開いたときに、ツリー側も同期して選択する
+    const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
+        if (!editor || !editor.document) return;
+        
+        // 現在開いているファイルのパスを取得
+        const activeFilePath = editor.document.uri.fsPath;
+        
+        // ツリーの中にそのファイルがあるか探す
+        const foundNode = treeDataProvider.findNodeByPath(activeFilePath);
+        
+        if (foundNode) {
+            // 見つかったら、そのノードを表示(reveal)して選択(select)する
+            // focus: false にすることで、カーソルはエディタに残したまま見た目だけ選択状態にする
+            treeView.reveal(foundNode, { select: true, focus: false, expand: true });
+        }
+    };
 
-    // 1. 作成系
+    // 1. 起動時にすでに開いているファイルがあれば同期
+    syncTreeSelection(vscode.window.activeTextEditor);
+
+    // 2. タブを切り替えるたびに同期
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+        syncTreeSelection(editor);
+    }));
+
+
+    // --- コマンド登録 (既存のまま) ---
+
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
-        const label = await vscode.window.showInputBox({ prompt: 'Enter root group name' });
+        const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
         if (!label) return;
         treeDataProvider.addGroup(label, undefined);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroup', async (node?: MyNode) => {
-        const label = await vscode.window.showInputBox({ prompt: 'Enter group name' });
+        const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
         if (!label) return;
         treeDataProvider.addGroup(label, node);
     }));
 
-    // 2. 編集・削除系
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.renameEntry', async (node: MyNode) => {
         const newName = await vscode.window.showInputBox({ 
-            prompt: 'Enter new name',
+            prompt: '新しい名前を入力してください',
             value: node.label 
         });
         if (!newName) return;
         treeDataProvider.renameNode(node, newName);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node: MyNode) => {
-        treeDataProvider.removeNode(node);
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', async (node: MyNode) => {
+        const answer = await vscode.window.showWarningMessage(
+            `'${node.label}' を削除しますか？`,
+            { modal: true },
+            '削除'
+        );
+        if (answer === '削除') {
+            treeDataProvider.removeNode(node);
+        }
     }));
 
-    // 3. 展開・折りたたみ系 (個別)
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
         treeDataProvider.collapseRecursive(node);
     }));
@@ -64,7 +94,6 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.expandRecursive(node);
     }));
 
-    // 4. 展開・折りたたみ系 (全体)
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseAll', () => {
         treeDataProvider.collapseRecursive(undefined);
     }));
@@ -82,12 +111,33 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     private storageKey = 'customExplorerData';
     private data: MyNode[] = [];
 
-    // ★修正1: 'text/plain' も受け入れるように追加
     public dropMimeTypes = ['application/vnd.code.tree.customExplorer', 'text/uri-list', 'text/plain'];
     public dragMimeTypes = ['application/vnd.code.tree.customExplorer'];
 
     constructor(private context: vscode.ExtensionContext) {
         this.loadData();
+    }
+
+    // ★ 追加: パスからノードを検索するメソッド
+    public findNodeByPath(targetPath: string): MyNode | undefined {
+        // 再帰的に探すヘルパー関数
+        const searchRecursive = (nodes: MyNode[]): MyNode | undefined => {
+            for (const node of nodes) {
+                // ファイルかつパスが一致するか？
+                // (Mac/Windowsのパス区切り文字の違いを吸収するため path.normalize などを挟むとなお良いですが、一旦単純比較)
+                if (node.type === 'file' && node.filePath === targetPath) {
+                    return node;
+                }
+                // 子要素があれば潜る
+                if (node.children) {
+                    const found = searchRecursive(node.children);
+                    if (found) return found;
+                }
+            }
+            return undefined;
+        };
+
+        return searchRecursive(this.data);
     }
 
     getTreeItem(element: MyNode): vscode.TreeItem {
@@ -142,10 +192,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         dataTransfer.set('application/vnd.code.tree.customExplorer', new vscode.DataTransferItem(source));
     }
 
-    // ★修正2: Cursor/VSCode両対応の強力なドロップ処理
     public async handleDrop(target: MyNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
         
-        // A. 内部ツリーからの移動
         const internalDrag = dataTransfer.get('application/vnd.code.tree.customExplorer');
         if (internalDrag) {
             const sources: MyNode[] = internalDrag.value;
@@ -153,8 +201,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             return;
         }
 
-        // B. 外部からのファイル/フォルダ追加
-        // text/uri-list (標準) または text/plain (フォールバック) を取得
         let uriString = "";
         const uriListItem = dataTransfer.get('text/uri-list');
         const plainTextItem = dataTransfer.get('text/plain');
@@ -166,28 +212,22 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
 
         if (uriString) {
-            // ★改行コードの違い (\r\n か \n) を吸収して分割
             const rawPaths = uriString.split(/\r?\n/);
             
             for (const rawPath of rawPaths) {
-                // 空行やゴミデータを除去
                 const trimmedPath = rawPath.trim();
                 if (!trimmedPath) continue;
                 
                 try {
-                    // ★URIとして解析できるか、または生のパスとして扱うか判定
                     let fsPath: string;
                     if (trimmedPath.startsWith('file://')) {
                         fsPath = vscode.Uri.parse(trimmedPath).fsPath;
                     } else {
-                        // file:// がついていない場合はそのままパスとして扱う
                         fsPath = trimmedPath;
                     }
 
-                    // 念のため存在確認
                     if (!fs.existsSync(fsPath)) continue;
 
-                    // ファイルかディレクトリか判定
                     const stat = fs.statSync(fsPath);
 
                     if (stat.isDirectory()) {
