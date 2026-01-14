@@ -32,42 +32,42 @@
     "commands": [
       {
         "command": "customExplorer.addGroup",
-        "title": "New Group",
+        "title": "新しいフォルダー...",
         "icon": "$(new-folder)"
       },
       {
         "command": "customExplorer.addRootGroup",
-        "title": "New Root Group",
+        "title": "新しいフォルダー...",
         "icon": "$(new-folder)"
       },
       {
         "command": "customExplorer.removeEntry",
-        "title": "Remove",
+        "title": "削除",
         "icon": "$(trash)"
       },
       {
         "command": "customExplorer.renameEntry",
-        "title": "Rename",
+        "title": "名前の変更...",
         "icon": "$(edit)"
       },
       {
         "command": "customExplorer.collapseRecursive",
-        "title": "Collapse All",
+        "title": "再帰的に折りたたむ",
         "icon": "$(collapse-all)"
       },
       {
         "command": "customExplorer.expandRecursive",
-        "title": "Expand All",
+        "title": "再帰的に展開",
         "icon": "$(expand-all)"
       },
       {
         "command": "customExplorer.collapseAll",
-        "title": "Collapse All",
+        "title": "すべて折りたたむ",
         "icon": "$(collapse-all)"
       },
       {
         "command": "customExplorer.expandAll",
-        "title": "Expand All",
+        "title": "すべて展開",
         "icon": "$(expand-all)"
       }
     ],
