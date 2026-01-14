@@ -20,6 +20,12 @@ export function activate(context: vscode.ExtensionContext) {
         canSelectMany: true
     });
 
+	context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
+        const label = await vscode.window.showInputBox({ prompt: 'Enter root group name' });
+        if (!label) return;
+        treeDataProvider.addGroup(label, undefined);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroup', async (node?: MyNode) => {
         const label = await vscode.window.showInputBox({ prompt: 'Enter group name' });
         if (!label) return;
@@ -30,14 +36,20 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.removeNode(node);
     }));
 
-    // 折りたたみコマンド
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
         treeDataProvider.collapseRecursive(node);
     }));
 
-    // ★ 追加: 展開コマンド
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandRecursive', (node: MyNode) => {
         treeDataProvider.expandRecursive(node);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseAll', () => {
+        treeDataProvider.collapseRecursive(undefined);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandAll', () => {
+        treeDataProvider.expandRecursive(undefined);
     }));
 }
 
@@ -130,41 +142,60 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // IDを書き換えて強制的に閉じる
-    public collapseRecursive(node: MyNode) {
+    // ★ 修正: node が undefined ならルート直下の全アイテムを対象にする
+    public collapseRecursive(node?: MyNode) {
+        const targets = node ? [node] : this.data; // 対象リストを作成
+
         const resetNodeState = (targetNode: MyNode) => {
             if (targetNode.type === 'group') {
                 targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-                targetNode.id = this.generateId(); // キャッシュ無効化
+                targetNode.id = this.generateId();
                 
                 if (targetNode.children) {
                     targetNode.children.forEach(child => resetNodeState(child));
                 }
             }
         };
-        resetNodeState(node);
+
+        // 対象すべてに適用
+        targets.forEach(target => resetNodeState(target));
+        
         this.saveData();
-        this.refreshParentOrRoot(node);
+
+        if (node) {
+            this.refreshParentOrRoot(node);
+        } else {
+            // 全体の場合はルートからリフレッシュ
+            this._onDidChangeTreeData.fire(undefined);
+        }
     }
 
-    // ★ 追加: IDを書き換えて強制的に開く
-    public expandRecursive(node: MyNode) {
+    // ★ 修正: node が undefined ならルート直下の全アイテムを対象にする
+    public expandRecursive(node?: MyNode) {
+        const targets = node ? [node] : this.data;
+
         const resetNodeState = (targetNode: MyNode) => {
             if (targetNode.type === 'group') {
                 targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-                targetNode.id = this.generateId(); // キャッシュ無効化
+                targetNode.id = this.generateId();
                 
                 if (targetNode.children) {
                     targetNode.children.forEach(child => resetNodeState(child));
                 }
             }
         };
-        resetNodeState(node);
+
+        targets.forEach(target => resetNodeState(target));
+
         this.saveData();
-        this.refreshParentOrRoot(node);
+
+        if (node) {
+            this.refreshParentOrRoot(node);
+        } else {
+            this._onDidChangeTreeData.fire(undefined);
+        }
     }
 
-    // 再描画のヘルパー関数（共通化しました）
     private refreshParentOrRoot(node: MyNode) {
         const parent = this.getParent(node);
         if (parent) {

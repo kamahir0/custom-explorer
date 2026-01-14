@@ -36,6 +36,11 @@
         "icon": "$(new-folder)"
       },
       {
+        "command": "customExplorer.addRootGroup",
+        "title": "New Root Group",
+        "icon": "$(new-folder)"
+      },
+      {
         "command": "customExplorer.removeEntry",
         "title": "Remove",
         "icon": "$(trash)"
@@ -49,12 +54,32 @@
         "command": "customExplorer.expandRecursive",
         "title": "Expand All",
         "icon": "$(expand-all)"
+      },
+      {
+        "command": "customExplorer.collapseAll",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
+      },
+      {
+        "command": "customExplorer.expandAll",
+        "title": "Expand All",
+        "icon": "$(expand-all)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "customExplorer.addGroup",
+          "command": "customExplorer.addRootGroup",
+          "when": "view == my-favorites-view",
+          "group": "navigation"
+        },
+        {
+          "command": "customExplorer.collapseAll",
+          "when": "view == my-favorites-view",
+          "group": "navigation"
+        },
+        {
+          "command": "customExplorer.expandAll",
           "when": "view == my-favorites-view",
           "group": "navigation"
         }
