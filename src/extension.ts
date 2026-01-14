@@ -82,7 +82,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     private storageKey = 'customExplorerData';
     private data: MyNode[] = [];
 
-    public dropMimeTypes = ['application/vnd.code.tree.customExplorer', 'text/uri-list'];
+    // ★修正1: 'text/plain' も受け入れるように追加
+    public dropMimeTypes = ['application/vnd.code.tree.customExplorer', 'text/uri-list', 'text/plain'];
     public dragMimeTypes = ['application/vnd.code.tree.customExplorer'];
 
     constructor(private context: vscode.ExtensionContext) {
@@ -141,6 +142,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         dataTransfer.set('application/vnd.code.tree.customExplorer', new vscode.DataTransferItem(source));
     }
 
+    // ★修正2: Cursor/VSCode両対応の強力なドロップ処理
     public async handleDrop(target: MyNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
         
         // A. 内部ツリーからの移動
@@ -152,32 +154,49 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
 
         // B. 外部からのファイル/フォルダ追加
-        const uriList = dataTransfer.get('text/uri-list');
-        if (uriList) {
-            const uriListString = await uriList.asString();
-            // 複数行のURIをパースして処理
-            const paths = uriListString.split('\r\n');
+        // text/uri-list (標準) または text/plain (フォールバック) を取得
+        let uriString = "";
+        const uriListItem = dataTransfer.get('text/uri-list');
+        const plainTextItem = dataTransfer.get('text/plain');
+
+        if (uriListItem) {
+            uriString = await uriListItem.asString();
+        } else if (plainTextItem) {
+            uriString = await plainTextItem.asString();
+        }
+
+        if (uriString) {
+            // ★改行コードの違い (\r\n か \n) を吸収して分割
+            const rawPaths = uriString.split(/\r?\n/);
             
-            for (const filePathUri of paths) {
-                if (!filePathUri) continue;
+            for (const rawPath of rawPaths) {
+                // 空行やゴミデータを除去
+                const trimmedPath = rawPath.trim();
+                if (!trimmedPath) continue;
                 
                 try {
-                    // file:/// 形式を通常のパスに戻す
-                    const uri = vscode.Uri.parse(filePathUri);
-                    const fsPath = uri.fsPath;
+                    // ★URIとして解析できるか、または生のパスとして扱うか判定
+                    let fsPath: string;
+                    if (trimmedPath.startsWith('file://')) {
+                        fsPath = vscode.Uri.parse(trimmedPath).fsPath;
+                    } else {
+                        // file:// がついていない場合はそのままパスとして扱う
+                        fsPath = trimmedPath;
+                    }
+
+                    // 念のため存在確認
+                    if (!fs.existsSync(fsPath)) continue;
 
                     // ファイルかディレクトリか判定
                     const stat = fs.statSync(fsPath);
 
                     if (stat.isDirectory()) {
-                        // ★フォルダなら再帰読み込みして追加
                         this.importDirectory(fsPath, target);
                     } else {
-                        // ★ファイルならそのまま追加
                         this.addFile(fsPath, target);
                     }
                 } catch (e) {
-                    console.error('Drop failed for path:', filePathUri, e);
+                    console.error('Drop failed for path:', trimmedPath, e);
                 }
             }
         }
@@ -185,20 +204,17 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // ★追加: ディレクトリを再帰的に読み込んでツリーに追加する
     public importDirectory(dirPath: string, parent?: MyNode) {
         const dirName = path.basename(dirPath);
 
-        // 1. まずディレクトリ自体を「グループ」として作成
         const newGroupNode: MyNode = {
             id: this.generateId(),
             label: dirName,
             type: 'group',
             children: [],
-            collapsibleState: vscode.TreeItemCollapsibleState.Expanded // 読み込んだら開いた状態にする
+            collapsibleState: vscode.TreeItemCollapsibleState.Expanded
         };
 
-        // 親に追加（またはルートに追加）
         if (parent && parent.type === 'group') {
             parent.children = parent.children || [];
             parent.children.push(newGroupNode);
@@ -206,33 +222,26 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             this.data.push(newGroupNode);
         }
 
-        // 2. ディレクトリの中身を走査する再帰関数
         const scanRecursive = (currentPath: string, parentNode: MyNode) => {
             try {
-                // ディレクトリ内のアイテムを取得（ファイル種別情報付き）
                 const items = fs.readdirSync(currentPath, { withFileTypes: true });
 
                 for (const item of items) {
                     const fullPath = path.join(currentPath, item.name);
 
                     if (item.isDirectory()) {
-                        // サブフォルダを見つけたら、グループを作って再帰
                         const subGroup: MyNode = {
                             id: this.generateId(),
                             label: item.name,
                             type: 'group',
                             children: [],
-                            collapsibleState: vscode.TreeItemCollapsibleState.Collapsed // サブフォルダは閉じておく
+                            collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
                         parentNode.children.push(subGroup);
-                        
-                        // ★再帰呼び出し
                         scanRecursive(fullPath, subGroup);
 
                     } else if (item.isFile()) {
-                        // ファイルを見つけたら追加
-                        // (隠しファイル .DS_Store などを除外したければここでif文を追加)
                         if (item.name === '.DS_Store') continue; 
 
                         const fileNode: MyNode = {
@@ -250,10 +259,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             }
         };
 
-        // 読み込み開始
         scanRecursive(dirPath, newGroupNode);
-
-        // 保存して更新
         this.saveAndRefresh();
     }
 
