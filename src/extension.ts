@@ -20,7 +20,10 @@ export function activate(context: vscode.ExtensionContext) {
         canSelectMany: true
     });
 
-	context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
+    // --- コマンド登録 ---
+
+    // 1. 作成系
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
         const label = await vscode.window.showInputBox({ prompt: 'Enter root group name' });
         if (!label) return;
         treeDataProvider.addGroup(label, undefined);
@@ -32,10 +35,22 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.addGroup(label, node);
     }));
 
+    // 2. 編集・削除系
+    // ★ 追加: リネームコマンド
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.renameEntry', async (node: MyNode) => {
+        const newName = await vscode.window.showInputBox({ 
+            prompt: 'Enter new name',
+            value: node.label // 現在の名前をプレフィル
+        });
+        if (!newName) return;
+        treeDataProvider.renameNode(node, newName);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node: MyNode) => {
         treeDataProvider.removeNode(node);
     }));
 
+    // 3. 展開・折りたたみ系 (個別)
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
         treeDataProvider.collapseRecursive(node);
     }));
@@ -44,6 +59,7 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.expandRecursive(node);
     }));
 
+    // 4. 展開・折りたたみ系 (全体)
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseAll', () => {
         treeDataProvider.collapseRecursive(undefined);
     }));
@@ -142,35 +158,35 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // ★ 修正: node が undefined ならルート直下の全アイテムを対象にする
+    // ★ 追加: リネーム処理
+    public renameNode(node: MyNode, newName: string) {
+        node.label = newName;
+        // 名前が変わったので、ソート順も変わる可能性がある -> saveAndRefresh で再ソートされる
+        this.saveAndRefresh();
+    }
+
     public collapseRecursive(node?: MyNode) {
-        const targets = node ? [node] : this.data; // 対象リストを作成
+        const targets = node ? [node] : this.data;
 
         const resetNodeState = (targetNode: MyNode) => {
             if (targetNode.type === 'group') {
                 targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
                 targetNode.id = this.generateId();
-                
                 if (targetNode.children) {
                     targetNode.children.forEach(child => resetNodeState(child));
                 }
             }
         };
-
-        // 対象すべてに適用
         targets.forEach(target => resetNodeState(target));
-        
         this.saveData();
-
+        
         if (node) {
             this.refreshParentOrRoot(node);
         } else {
-            // 全体の場合はルートからリフレッシュ
             this._onDidChangeTreeData.fire(undefined);
         }
     }
 
-    // ★ 修正: node が undefined ならルート直下の全アイテムを対象にする
     public expandRecursive(node?: MyNode) {
         const targets = node ? [node] : this.data;
 
@@ -178,15 +194,12 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             if (targetNode.type === 'group') {
                 targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
                 targetNode.id = this.generateId();
-                
                 if (targetNode.children) {
                     targetNode.children.forEach(child => resetNodeState(child));
                 }
             }
         };
-
         targets.forEach(target => resetNodeState(target));
-
         this.saveData();
 
         if (node) {

@@ -46,6 +46,11 @@
         "icon": "$(trash)"
       },
       {
+        "command": "customExplorer.renameEntry",
+        "title": "Rename",
+        "icon": "$(edit)"
+      },
+      {
         "command": "customExplorer.collapseRecursive",
         "title": "Collapse All",
         "icon": "$(collapse-all)"
@@ -111,17 +116,12 @@
           "group": "1_modification"
         },
         {
-          "command": "customExplorer.collapseRecursive",
-          "when": "view == my-favorites-view && viewItem == group",
-          "group": "1_modification"
-        },
-        {
-          "command": "customExplorer.expandRecursive",
-          "when": "view == my-favorites-view && viewItem == group",
-          "group": "1_modification"
-        },
-        {
           "command": "customExplorer.removeEntry",
+          "when": "view == my-favorites-view",
+          "group": "1_modification"
+        },
+        {
+          "command": "customExplorer.renameEntry",
           "when": "view == my-favorites-view",
           "group": "1_modification"
         }
