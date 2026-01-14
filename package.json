@@ -39,6 +39,11 @@
         "command": "customExplorer.removeEntry",
         "title": "Remove",
         "icon": "$(trash)"
+      },
+      {
+        "command": "customExplorer.collapseRecursive",
+        "title": "Collapse All",
+        "icon": "$(collapse-all)"
       }
     ],
     "menus": {
@@ -56,12 +61,22 @@
           "group": "inline"
         },
         {
+          "command": "customExplorer.collapseRecursive",
+          "when": "view == my-favorites-view && viewItem == group",
+          "group": "inline"
+        },
+        {
           "command": "customExplorer.removeEntry",
           "when": "view == my-favorites-view",
           "group": "inline"
         },
         {
           "command": "customExplorer.addGroup",
+          "when": "view == my-favorites-view && viewItem == group",
+          "group": "1_modification"
+        },
+        {
+          "command": "customExplorer.collapseRecursive",
           "when": "view == my-favorites-view && viewItem == group",
           "group": "1_modification"
         },

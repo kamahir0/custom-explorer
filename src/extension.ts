@@ -14,6 +14,7 @@ interface MyNode {
 export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new CustomTreeDataProvider(context);
 
+    // ★ treeViewの作成（getParentが実装されたので、reveal等がより正確に動くようになります）
     const treeView = vscode.window.createTreeView('my-favorites-view', {
         treeDataProvider: treeDataProvider,
         dragAndDropController: treeDataProvider, 
@@ -28,6 +29,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node: MyNode) => {
         treeDataProvider.removeNode(node);
+    }));
+
+    // ★ 折りたたみコマンド
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
+        // UI操作ではなく、データ操作で完結させます
+        treeDataProvider.collapseRecursive(node);
     }));
 }
 
@@ -55,7 +62,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         );
 
         treeItem.contextValue = element.type;
-        treeItem.id = element.id;
+        treeItem.id = element.id; // ここで新しいIDが適用される
 
         if (element.type === 'file' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
@@ -75,6 +82,25 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return element.children || [];
     }
 
+    // ★重要: VSCodeが親を探せるようにするメソッド（更新処理に必須）
+    getParent(element: MyNode): vscode.ProviderResult<MyNode> {
+        return this.findParent(this.data, element);
+    }
+
+    // 親探しの再帰ロジック
+    private findParent(nodes: MyNode[], target: MyNode): MyNode | undefined {
+        for (const node of nodes) {
+            if (node.children && node.children.includes(target)) {
+                return node;
+            }
+            if (node.children) {
+                const found = this.findParent(node.children, target);
+                if (found) return found;
+            }
+        }
+        return undefined;
+    }
+
     // --- D&D の実装 ---
 
     public handleDrag(source: readonly MyNode[], dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): void | Thenable<void> {
@@ -82,8 +108,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     public async handleDrop(target: MyNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
-        
-        // A. 内部ツリーからの移動
         const internalDrag = dataTransfer.get('application/vnd.code.tree.customExplorer');
         if (internalDrag) {
             const sources: MyNode[] = internalDrag.value;
@@ -91,7 +115,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             return;
         }
 
-        // B. 外部からのファイル追加
         const uriList = dataTransfer.get('text/uri-list');
         if (uriList) {
             const uriListString = await uriList.asString();
@@ -105,6 +128,37 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     // --- データ操作ロジック ---
+
+    // ★ 修正版: IDを書き換えて強制的に閉じる
+    public collapseRecursive(node: MyNode) {
+        const resetNodeState = (targetNode: MyNode) => {
+            if (targetNode.type === 'group') {
+                targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+                // ★ここが秘訣：IDを新しく作り直すことでVSCodeのキャッシュを無効化する
+                targetNode.id = this.generateId();
+                
+                if (targetNode.children) {
+                    targetNode.children.forEach(child => resetNodeState(child));
+                }
+            }
+        };
+
+        // 1. データ更新
+        resetNodeState(node);
+        
+        // 2. 保存
+        this.saveData();
+
+        // 3. 親を見つけて、親から再描画をかける（子供だけ更新してもVSCodeが無視する場合があるため）
+        const parent = this.getParent(node);
+        if (parent) {
+            // 親がいる場合は、親をリフレッシュ
+            this._onDidChangeTreeData.fire(parent as MyNode);
+        } else {
+            // ルート要素の場合は、全体をリフレッシュ
+            this._onDidChangeTreeData.fire(undefined);
+        }
+    }
 
     private moveNodes(sources: MyNode[], target: MyNode | undefined) {
         const isValidMove = (source: MyNode, target?: MyNode): boolean => {
@@ -126,9 +180,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             const removed = this.removeNode(source, false); 
 
             if (removed) {
-                // ターゲットがグループなら中へ、それ以外は同じ階層（親）へ追加したいが
-                // ここではシンプルに「グループへのドロップ＝中へ」「それ以外＝ルートへ」の挙動を維持
-                // ※並び順は saveAndRefresh で自動ソートされるため、pushするだけでOKです
                 if(target && target.type === 'group') {
                     target.children = target.children || [];
                     target.children.push(source);
@@ -157,6 +208,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         if (parent && parent.type === 'group') {
             parent.children = parent.children || [];
             parent.children.push(newNode);
+            parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
         } else {
             this.data.push(newNode);
         }
@@ -204,26 +256,25 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return result;
     }
 
-    // ★今回の変更点：保存時にソートを実行
     private saveAndRefresh() {
-        this.sortNodesRecursive(this.data); // 全データをルールに従って並び替え
-        this.context.workspaceState.update(this.storageKey, this.data);
+        this.sortNodesRecursive(this.data);
+        this.saveData();
         this._onDidChangeTreeData.fire();
     }
 
-    // ★ソート用ヘルパー関数
+    // データ保存のみを行う（再描画イベントを発火しない版）
+    private saveData() {
+        this.sortNodesRecursive(this.data);
+        this.context.workspaceState.update(this.storageKey, this.data);
+    }
+
     private sortNodesRecursive(nodes: MyNode[]) {
-        // 並び替えルール
         nodes.sort((a, b) => {
-            // ルール1: フォルダ(group)はファイルより上
             if (a.type === 'group' && b.type !== 'group') { return -1; }
             if (a.type !== 'group' && b.type === 'group') { return 1; }
-            
-            // ルール2: 同じ種類なら名前で昇順 (abc順)
             return a.label.localeCompare(b.label);
         });
 
-        // 子要素も再帰的にソート
         nodes.forEach(node => {
             if (node.children && node.children.length > 0) {
                 this.sortNodesRecursive(node.children);
