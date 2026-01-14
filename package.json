@@ -1,0 +1,84 @@
+{
+  "name": "custom-explorer",
+  "displayName": "Custom Explorer",
+  "description": "",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.108.0"
+  },
+  "activationEvents": [
+    
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "my-favorites-container",
+          "title": "My Favorites",
+          "icon": "$(heart)"
+        }
+      ]
+    },
+    "views": {
+      "my-favorites-container": [
+        {
+          "id": "my-favorites-view",
+          "name": "My Workspace",
+          "icon": "$(list-flat)"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "customExplorer.addGroup",
+        "title": "New Group",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "customExplorer.removeEntry",
+        "title": "Remove",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "customExplorer.addGroup",
+          "when": "view == my-favorites-view",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "customExplorer.addGroup",
+          "when": "view == my-favorites-view && viewItem == group",
+          "group": "inline"
+        },
+        {
+          "command": "customExplorer.removeEntry",
+          "when": "view == my-favorites-view",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.108.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.52.0",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
