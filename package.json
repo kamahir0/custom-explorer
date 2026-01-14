@@ -15,7 +15,7 @@
         {
           "id": "custom-explorer-container",
           "title": "Custom Explorer",
-          "icon": "$(files)"
+          "icon": "$(heart)"
         }
       ]
     },
@@ -23,8 +23,8 @@
       "custom-explorer-container": [
         {
           "id": "custom-explorer-view",
-          "name": "",
-          "icon": "$(list-flat)"
+          "name": "Custom Explorer",
+          "icon": "$(heart)"
         }
       ]
     },
