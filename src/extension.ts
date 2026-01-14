@@ -14,7 +14,6 @@ interface MyNode {
 export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new CustomTreeDataProvider(context);
 
-    // ★ treeViewの作成（getParentが実装されたので、reveal等がより正確に動くようになります）
     const treeView = vscode.window.createTreeView('my-favorites-view', {
         treeDataProvider: treeDataProvider,
         dragAndDropController: treeDataProvider, 
@@ -31,10 +30,14 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.removeNode(node);
     }));
 
-    // ★ 折りたたみコマンド
+    // 折りたたみコマンド
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
-        // UI操作ではなく、データ操作で完結させます
         treeDataProvider.collapseRecursive(node);
+    }));
+
+    // ★ 追加: 展開コマンド
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandRecursive', (node: MyNode) => {
+        treeDataProvider.expandRecursive(node);
     }));
 }
 
@@ -62,7 +65,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         );
 
         treeItem.contextValue = element.type;
-        treeItem.id = element.id; // ここで新しいIDが適用される
+        treeItem.id = element.id; 
 
         if (element.type === 'file' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
@@ -82,12 +85,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return element.children || [];
     }
 
-    // ★重要: VSCodeが親を探せるようにするメソッド（更新処理に必須）
     getParent(element: MyNode): vscode.ProviderResult<MyNode> {
         return this.findParent(this.data, element);
     }
 
-    // 親探しの再帰ロジック
     private findParent(nodes: MyNode[], target: MyNode): MyNode | undefined {
         for (const node of nodes) {
             if (node.children && node.children.includes(target)) {
@@ -129,33 +130,46 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // ★ 修正版: IDを書き換えて強制的に閉じる
+    // IDを書き換えて強制的に閉じる
     public collapseRecursive(node: MyNode) {
         const resetNodeState = (targetNode: MyNode) => {
             if (targetNode.type === 'group') {
                 targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-                // ★ここが秘訣：IDを新しく作り直すことでVSCodeのキャッシュを無効化する
-                targetNode.id = this.generateId();
+                targetNode.id = this.generateId(); // キャッシュ無効化
                 
                 if (targetNode.children) {
                     targetNode.children.forEach(child => resetNodeState(child));
                 }
             }
         };
-
-        // 1. データ更新
         resetNodeState(node);
-        
-        // 2. 保存
         this.saveData();
+        this.refreshParentOrRoot(node);
+    }
 
-        // 3. 親を見つけて、親から再描画をかける（子供だけ更新してもVSCodeが無視する場合があるため）
+    // ★ 追加: IDを書き換えて強制的に開く
+    public expandRecursive(node: MyNode) {
+        const resetNodeState = (targetNode: MyNode) => {
+            if (targetNode.type === 'group') {
+                targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+                targetNode.id = this.generateId(); // キャッシュ無効化
+                
+                if (targetNode.children) {
+                    targetNode.children.forEach(child => resetNodeState(child));
+                }
+            }
+        };
+        resetNodeState(node);
+        this.saveData();
+        this.refreshParentOrRoot(node);
+    }
+
+    // 再描画のヘルパー関数（共通化しました）
+    private refreshParentOrRoot(node: MyNode) {
         const parent = this.getParent(node);
         if (parent) {
-            // 親がいる場合は、親をリフレッシュ
             this._onDidChangeTreeData.fire(parent as MyNode);
         } else {
-            // ルート要素の場合は、全体をリフレッシュ
             this._onDidChangeTreeData.fire(undefined);
         }
     }
@@ -262,7 +276,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         this._onDidChangeTreeData.fire();
     }
 
-    // データ保存のみを行う（再描画イベントを発火しない版）
     private saveData() {
         this.sortNodesRecursive(this.data);
         this.context.workspaceState.update(this.storageKey, this.data);

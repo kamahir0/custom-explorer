@@ -44,6 +44,11 @@
         "command": "customExplorer.collapseRecursive",
         "title": "Collapse All",
         "icon": "$(collapse-all)"
+      },
+      {
+        "command": "customExplorer.expandRecursive",
+        "title": "Expand All",
+        "icon": "$(expand-all)"
       }
     ],
     "menus": {
@@ -66,6 +71,11 @@
           "group": "inline"
         },
         {
+          "command": "customExplorer.expandRecursive",
+          "when": "view == my-favorites-view && viewItem == group",
+          "group": "inline"
+        },
+        {
           "command": "customExplorer.removeEntry",
           "when": "view == my-favorites-view",
           "group": "inline"
@@ -77,6 +87,11 @@
         },
         {
           "command": "customExplorer.collapseRecursive",
+          "when": "view == my-favorites-view && viewItem == group",
+          "group": "1_modification"
+        },
+        {
+          "command": "customExplorer.expandRecursive",
           "when": "view == my-favorites-view && viewItem == group",
           "group": "1_modification"
         },
