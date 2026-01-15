@@ -30,6 +30,12 @@ export function activate(context: vscode.ExtensionContext) {
     const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
         if (!editor || !editor.document) return;
         
+        // ★ 追加: ツリービューが表示されていないときは同期処理をスキップする
+        // これにより、サイドバーが閉じているときに勝手に開くのを防ぎます
+        if (!treeView.visible) {
+            return;
+        }
+
         // 現在開いているファイルのパスを取得
         const activeFilePath = editor.document.uri.fsPath;
         
