@@ -26,19 +26,17 @@ export function activate(context: vscode.ExtensionContext) {
         treeView.title = vscode.workspace.name;
     }
 
-    // ★ 追加機能: エディタでファイルを開いたときに、ツリー側も同期して選択する
+    // ★ 同期機能: マップ検索により高速化されています
     const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
         if (!editor || !editor.document) return;
         
         // 現在開いているファイルのパスを取得
         const activeFilePath = editor.document.uri.fsPath;
         
-        // ツリーの中にそのファイルがあるか探す
+        // 高速化されたメソッドで検索
         const foundNode = treeDataProvider.findNodeByPath(activeFilePath);
         
         if (foundNode) {
-            // 見つかったら、そのノードを表示(reveal)して選択(select)する
-            // focus: false にすることで、カーソルはエディタに残したまま見た目だけ選択状態にする
             treeView.reveal(foundNode, { select: true, focus: false, expand: true });
         }
     };
@@ -52,7 +50,7 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
 
-    // --- コマンド登録 (既存のまま) ---
+    // --- コマンド登録 ---
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
         const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
@@ -111,6 +109,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     private storageKey = 'customExplorerData';
     private data: MyNode[] = [];
 
+    // ★ 追加: パス検索を高速化するためのインデックス (Lookup Table)
+    // Key: ファイルパス, Value: ノードオブジェクト
+    private pathIndex: Map<string, MyNode> = new Map();
+
     public dropMimeTypes = ['application/vnd.code.tree.customExplorer', 'text/uri-list', 'text/plain'];
     public dragMimeTypes = ['application/vnd.code.tree.customExplorer'];
 
@@ -118,26 +120,28 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         this.loadData();
     }
 
-    // ★ 追加: パスからノードを検索するメソッド
+    // ★ 修正: ループせずに Map から一発で取得 (O(1))
     public findNodeByPath(targetPath: string): MyNode | undefined {
-        // 再帰的に探すヘルパー関数
-        const searchRecursive = (nodes: MyNode[]): MyNode | undefined => {
+        // OSごとのパス正規化が必要な場合はここで行う (例:小文字化など)
+        // 今回はシンプルにそのまま検索
+        return this.pathIndex.get(targetPath);
+    }
+
+    // ★ 追加: インデックスを再構築するヘルパー
+    private rebuildIndex() {
+        this.pathIndex.clear();
+        
+        const traverse = (nodes: MyNode[]) => {
             for (const node of nodes) {
-                // ファイルかつパスが一致するか？
-                // (Mac/Windowsのパス区切り文字の違いを吸収するため path.normalize などを挟むとなお良いですが、一旦単純比較)
-                if (node.type === 'file' && node.filePath === targetPath) {
-                    return node;
+                if (node.type === 'file' && node.filePath) {
+                    this.pathIndex.set(node.filePath, node);
                 }
-                // 子要素があれば潜る
                 if (node.children) {
-                    const found = searchRecursive(node.children);
-                    if (found) return found;
+                    traverse(node.children);
                 }
             }
-            return undefined;
         };
-
-        return searchRecursive(this.data);
+        traverse(this.data);
     }
 
     getTreeItem(element: MyNode): vscode.TreeItem {
@@ -463,6 +467,9 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     private saveData() {
+        // ★ 保存前にインデックスを更新
+        this.rebuildIndex();
+        
         this.sortNodesRecursive(this.data);
         this.context.workspaceState.update(this.storageKey, this.data);
     }
@@ -483,6 +490,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     private loadData() {
         this.data = this.context.workspaceState.get<MyNode[]>(this.storageKey) || [];
+        // ★ ロード後にインデックスを構築
+        this.rebuildIndex();
     }
 
     private generateId(): string {
