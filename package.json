@@ -95,24 +95,19 @@
           "group": "inline@1"
         },
         {
-          "command": "customExplorer.renameEntry",
-          "when": "view == custom-explorer-view",
-          "group": "inline@2"
-        },
-        {
           "command": "customExplorer.collapseRecursive",
           "when": "view == custom-explorer-view && viewItem == group",
-          "group": "inline@3"
+          "group": "inline@2"
         },
         {
           "command": "customExplorer.expandRecursive",
           "when": "view == custom-explorer-view && viewItem == group",
-          "group": "inline@4"
+          "group": "inline@3"
         },
         {
           "command": "customExplorer.removeEntry",
           "when": "view == custom-explorer-view",
-          "group": "inline@5"
+          "group": "inline@4"
         },
         {
           "command": "customExplorer.addGroup",
@@ -121,7 +116,7 @@
         },
         {
           "command": "customExplorer.renameEntry",
-          "when": "view == custom-explorer-view",
+          "when": "view == custom-explorer-view && viewItem == group",
           "group": "1_modification@2"
         },
         {
