@@ -1,9 +1,9 @@
 {
   "name": "custom-explorer",
   "displayName": "Custom Explorer",
-  "publisher": "kamahir0",
+  "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "engines": {
     "vscode": "^1.100.0"
   },
