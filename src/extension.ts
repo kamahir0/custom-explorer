@@ -19,7 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
     const treeView = vscode.window.createTreeView('custom-explorer-view', {
         treeDataProvider: treeDataProvider,
         dragAndDropController: treeDataProvider, 
-        canSelectMany: true
+        canSelectMany: true // ★ これがtrueなので複数選択可能です
     });
 
     if (vscode.workspace.name) {
@@ -89,20 +89,30 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.renameNode(node, newName);
     }));
 
-    // ★ 修正: nodeがundefinedの場合のガードを追加 (連打対策)
-    // 複数選択されている場合は第2引数に配列が入るため、それも考慮して一括削除できるように改良
+    // ★ 修正: 複数選択削除 & キーボードショートカット対応
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node?: MyNode, nodes?: MyNode[]) => {
-        if (!node) return;
-        
-        // 複数選択削除のサポート
+        // 削除対象リストを作成
+        const targets: MyNode[] = [];
+
         if (nodes && nodes.length > 0) {
-            // まとめて削除
-            nodes.forEach(n => treeDataProvider.removeNode(n, false)); // 個別の保存はスキップ
-            treeDataProvider.saveAndRefresh(); // 最後に一回保存
+            // ケース1: 右クリック等で複数選択の配列が渡された場合
+            targets.push(...nodes);
+        } else if (node) {
+            // ケース2: 単一のアイテムが指定された場合
+            targets.push(node);
         } else {
-            // 単一削除
-            treeDataProvider.removeNode(node);
+            // ケース3: 引数がない場合 (Deleteキーなどのショートカット経由)
+            // 現在のツリービューの選択状態を使用する
+            if (treeView.selection.length > 0) {
+                targets.push(...treeView.selection);
+            }
         }
+
+        if (targets.length === 0) return;
+
+        // まとめて削除実行
+        targets.forEach(n => treeDataProvider.removeNode(n, false)); // 個別の保存はスキップ
+        treeDataProvider.saveAndRefresh(); // 最後に一回保存して更新
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
