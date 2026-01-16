@@ -10,6 +10,27 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "Custom Explorer",
+      "properties": {
+        "customExplorer.excludeExtensions": {
+          "type": "array",
+          "default": [
+            ".prefab",
+            ".unity",
+            ".preset",
+            ".asmdef",
+            ".asset",
+            ".mat",
+            ".meta",
+            ".DS_Store",
+            ".git",
+            ".gitignore"
+          ],
+          "description": "カスタムエクスプローラーに追加しないファイル拡張子やファイル名を設定します（例: .meta, .git）"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {

@@ -466,8 +466,23 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
+    // ★ 追加: 設定から除外リストを読み取って判定するメソッド
+    private shouldExclude(filePath: string): boolean {
+        const config = vscode.workspace.getConfiguration('customExplorer');
+        const excludes = config.get<string[]>('excludeExtensions') || [];
+        
+        const fileName = path.basename(filePath);
+        
+        // 拡張子またはファイル名の後方一致でチェック
+        // 例: ".meta" が設定にある場合、"file.meta" は除外される
+        return excludes.some(ext => fileName.endsWith(ext));
+    }
+
     public importDirectory(dirPath: string, parent?: MyNode) {
         const dirName = path.basename(dirPath);
+
+        // ★ 追加: ディレクトリ自体の名前も除外チェック
+        if (this.shouldExclude(dirName)) return;
 
         const newGroupNode: MyNode = {
             id: this.generateId(),
@@ -492,6 +507,9 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                 for (const item of items) {
                     const fullPath = path.join(currentPath, item.name);
 
+                    // ★ 追加: 除外設定にマッチしたらスキップ
+                    if (this.shouldExclude(item.name)) continue;
+
                     if (item.isDirectory()) {
                         const subGroup: MyNode = {
                             id: this.generateId(),
@@ -506,6 +524,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                         scanRecursive(fullPath, subGroup);
 
                     } else if (item.isFile()) {
+                        // .DS_Store はハードコードで除外しつつ、設定も見る
                         if (item.name === '.DS_Store') continue; 
 
                         const fileNode: MyNode = {
@@ -642,6 +661,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     public addFile(filePath: string, parent?: MyNode) {
         const fileName = path.basename(filePath);
+
+        // ★ 追加: 設定チェック
+        if (this.shouldExclude(fileName)) return;
+
         const newNode: MyNode = {
             id: this.generateId(),
             label: fileName,
