@@ -49,6 +49,13 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "custom-explorer-view",
+        "contents": "まだ項目がありません。\n[新しいフォルダーを追加](command:customExplorer.addRootGroup)",
+        "when": "customExplorer.isEmpty"
+      }
+    ],
     "commands": [
       {
         "command": "customExplorer.addGroup",

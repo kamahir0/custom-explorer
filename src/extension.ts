@@ -466,7 +466,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // ★ 追加: 設定から除外リストを読み取って判定するメソッド
+    // ★ 設定から除外リストを読み取って判定するメソッド
     private shouldExclude(filePath: string): boolean {
         const config = vscode.workspace.getConfiguration('customExplorer');
         const excludes = config.get<string[]>('excludeExtensions') || [];
@@ -481,7 +481,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     public importDirectory(dirPath: string, parent?: MyNode) {
         const dirName = path.basename(dirPath);
 
-        // ★ 追加: ディレクトリ自体の名前も除外チェック
+        // ★ ディレクトリ自体の名前も除外チェック
         if (this.shouldExclude(dirName)) return;
 
         const newGroupNode: MyNode = {
@@ -507,7 +507,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                 for (const item of items) {
                     const fullPath = path.join(currentPath, item.name);
 
-                    // ★ 追加: 除外設定にマッチしたらスキップ
+                    // ★ 除外設定にマッチしたらスキップ
                     if (this.shouldExclude(item.name)) continue;
 
                     if (item.isDirectory()) {
@@ -662,7 +662,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     public addFile(filePath: string, parent?: MyNode) {
         const fileName = path.basename(filePath);
 
-        // ★ 追加: 設定チェック
+        // ★ 設定チェック
         if (this.shouldExclude(fileName)) return;
 
         const newNode: MyNode = {
@@ -712,6 +712,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     public saveAndRefresh() {
         this.sortNodesRecursive(this.data);
         this.saveData();
+        // コンテキストの更新
+        this.updateContextKey();
         this._onDidChangeTreeData.fire();
     }
 
@@ -738,9 +740,17 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     private loadData() {
         this.data = this.context.workspaceState.get<MyNode[]>(this.storageKey) || [];
         this.rebuildIndex();
+        // コンテキストの初期化
+        this.updateContextKey();
     }
 
     private generateId(): string {
         return Math.random().toString(36).substring(2, 15);
+    }
+
+    // ★ 追加: 空かどうかのコンテキストを更新するメソッド
+    private updateContextKey() {
+        // データが空なら true
+        vscode.commands.executeCommand('setContext', 'customExplorer.isEmpty', this.data.length === 0);
     }
 }
