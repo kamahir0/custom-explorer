@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -110,12 +110,12 @@
           "group": "navigation@1"
         },
         {
-          "command": "customExplorer.collapseAll",
+          "command": "customExplorer.expandAll",
           "when": "view == custom-explorer-view",
           "group": "navigation@2"
         },
         {
-          "command": "customExplorer.expandAll",
+          "command": "customExplorer.collapseAll",
           "when": "view == custom-explorer-view",
           "group": "navigation@3"
         }
@@ -127,12 +127,12 @@
           "group": "inline@1"
         },
         {
-          "command": "customExplorer.collapseRecursive",
+          "command": "customExplorer.expandRecursive",
           "when": "view == custom-explorer-view && viewItem == group",
           "group": "inline@2"
         },
         {
-          "command": "customExplorer.expandRecursive",
+          "command": "customExplorer.collapseRecursive",
           "when": "view == custom-explorer-view && viewItem == group",
           "group": "inline@3"
         },
