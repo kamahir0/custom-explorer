@@ -89,9 +89,20 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.renameNode(node, newName);
     }));
 
-    // ★ 修正: 確認ダイアログを削除し、即座に実行するように変更
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node: MyNode) => {
-        treeDataProvider.removeNode(node);
+    // ★ 修正: nodeがundefinedの場合のガードを追加 (連打対策)
+    // 複数選択されている場合は第2引数に配列が入るため、それも考慮して一括削除できるように改良
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node?: MyNode, nodes?: MyNode[]) => {
+        if (!node) return;
+        
+        // 複数選択削除のサポート
+        if (nodes && nodes.length > 0) {
+            // まとめて削除
+            nodes.forEach(n => treeDataProvider.removeNode(n, false)); // 個別の保存はスキップ
+            treeDataProvider.saveAndRefresh(); // 最後に一回保存
+        } else {
+            // 単一削除
+            treeDataProvider.removeNode(node);
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
@@ -639,7 +650,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     public removeNode(node: MyNode, shouldSave: boolean = true): boolean {
+        // ★ 修正: nodeがundefinedの場合のガードを追加
+        if (!node) return false;
+
         const removeRecursive = (nodes: MyNode[]): boolean => {
+            // node.id が undefined でないことを確認
             const index = nodes.findIndex(n => n.id === node.id);
             if (index !== -1) {
                 nodes.splice(index, 1);
@@ -656,11 +671,12 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         const result = removeRecursive(this.data);
         if (shouldSave && result) {
             this.saveAndRefresh();
+            // 削除時はインデックス再構築が必要なためsaveAndRefreshを呼ぶ
         }
         return result;
     }
 
-    private saveAndRefresh() {
+    public saveAndRefresh() {
         this.sortNodesRecursive(this.data);
         this.saveData();
         this._onDidChangeTreeData.fire();
