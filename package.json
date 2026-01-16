@@ -1,11 +1,15 @@
 {
   "name": "custom-explorer",
   "displayName": "Custom Explorer",
-  "publisher": "donuts-hiratsuka",
+  "publisher": "kamahir0",
   "description": "",
   "version": "0.0.6",
   "engines": {
     "vscode": "^1.100.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kamahir0/custom-explorer"
   },
   "activationEvents": [],
   "main": "./out/extension.js",
