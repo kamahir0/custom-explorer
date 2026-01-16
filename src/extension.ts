@@ -89,15 +89,9 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.renameNode(node, newName);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', async (node: MyNode) => {
-        const answer = await vscode.window.showWarningMessage(
-            `'${node.label}' を削除しますか？`,
-            { modal: true },
-            '削除'
-        );
-        if (answer === '削除') {
-            treeDataProvider.removeNode(node);
-        }
+    // ★ 修正: 確認ダイアログを削除し、即座に実行するように変更
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node: MyNode) => {
+        treeDataProvider.removeNode(node);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
