@@ -8,7 +8,7 @@ interface MyNode {
     label: string;
     type: 'group' | 'file';
     children?: MyNode[];
-    filePath?: string;
+    filePath?: string; // ファイルだけでなく、インポートしたフォルダの場合もパスを持つ
     collapsibleState?: vscode.TreeItemCollapsibleState;
 }
 
@@ -26,14 +26,10 @@ export function activate(context: vscode.ExtensionContext) {
         treeView.title = vscode.workspace.name;
     }
 
-    // ★ 同期機能: マップ検索により高速化されています
+    // ★ 同期機能
     const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
         if (!editor || !editor.document) return;
-        
-        // ツリービューが表示されていないときは同期処理をスキップする
-        if (!treeView.visible) {
-            return;
-        }
+        if (!treeView.visible) return;
 
         const activeFilePath = editor.document.uri.fsPath;
         const foundNode = treeDataProvider.findNodeByPath(activeFilePath);
@@ -43,24 +39,32 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
-    // 1. 起動時にすでに開いているファイルがあれば同期
+    // 1. 起動時同期
     syncTreeSelection(vscode.window.activeTextEditor);
 
-    // 2. タブを切り替えるたびに同期
+    // 2. タブ切り替え時同期
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
         syncTreeSelection(editor);
     }));
 
-    // ★ 変更点: DecorationProviderにtreeDataProviderを渡す（親子関係を辿るため）
+    // ★ エラー装飾プロバイダの登録
     const decorationProvider = new ProblemFileDecorationProvider(treeDataProvider);
     context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorationProvider));
 
-    // 診断情報（エラー発生など）が変わったら、デコレーション表示を更新する
+    // 診断情報の監視（エラー伝播用）
     context.subscriptions.push(vscode.languages.onDidChangeDiagnostics(e => {
-        // 変更があったファイルだけでなく、その「親フォルダ」も含めて更新通知を出す
         decorationProvider.fireDidChangeFileDecorations(e.uris);
     }));
 
+    // ★ 追加: ファイルリネームの監視
+    context.subscriptions.push(vscode.workspace.onDidRenameFiles(e => {
+        treeDataProvider.handleFileRename(e.files);
+    }));
+
+    // ★ 追加: ファイル削除の監視
+    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
+        treeDataProvider.handleFileDelete(e.files);
+    }));
 
     // --- コマンド登録 ---
 
@@ -113,37 +117,29 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 }
 
-// ★ エラー・警告状態をツリーアイテムに装飾するためのクラス（親への伝播機能付き）
+// ★ エラー装飾用クラス（親への伝播機能付き）
 class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
     
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[] | undefined> = this._onDidChangeFileDecorations.event;
 
-    // データ構造を参照できるようにする
     constructor(private treeDataProvider: CustomTreeDataProvider) {}
 
-    // VS Code が「このファイルURIに何か装飾（色やバッジ）をつける？」と聞いてくるメソッド
     provideFileDecoration(uri: vscode.Uri, token: vscode.CancellationToken): vscode.ProviderResult<vscode.FileDecoration> {
-        
-        // URIからノードを特定する
         const node = this.treeDataProvider.getNodeByUri(uri);
         if (!node) return undefined;
 
         if (node.type === 'file') {
-            // --- ファイルの場合：直接診断情報をチェック ---
             return this.getDiagnosticDecoration(uri);
         } else {
-            // --- グループの場合：子孫を再帰チェックしてエラーを吸い上げる ---
             return this.getGroupDecorationRecursive(node);
         }
     }
 
-    // ファイル単体の診断チェック
     private getDiagnosticDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
         const diagnostics = vscode.languages.getDiagnostics(uri);
         if (!diagnostics || diagnostics.length === 0) return undefined;
 
-        // エラー優先
         const hasError = diagnostics.some(d => d.severity === vscode.DiagnosticSeverity.Error);
         if (hasError) {
             return {
@@ -161,25 +157,20 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
                 tooltip: 'Warnings detected'
             };
         }
-
         return undefined;
     }
 
-    // グループの再帰チェック（エラーが見つかったら即座にリターンして負荷を下げる）
     private getGroupDecorationRecursive(groupNode: MyNode): vscode.FileDecoration | undefined {
         if (!groupNode.children || groupNode.children.length === 0) return undefined;
 
         let hasWarning = false;
 
-        // 再帰探索関数
-        // 戻り値: 'error' | 'warning' | 'none'
         const traverse = (nodes: MyNode[]): string => {
             for (const child of nodes) {
                 if (child.type === 'file' && child.filePath) {
                     const uri = vscode.Uri.file(child.filePath);
                     const diags = vscode.languages.getDiagnostics(uri);
                     
-                    // エラーが見つかったら、これ以上探す必要はない（最悪値が確定）
                     if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
                         return 'error';
                     }
@@ -213,30 +204,22 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         return undefined;
     }
 
-    // イベント発火用ヘルパー
-    // ファイルの状態が変わったとき、その親たちも「再チェック対象」としてイベントに含める
     public fireDidChangeFileDecorations(uris: ReadonlyArray<vscode.Uri>) {
         const urisToUpdate = new Set<string>();
 
         for (const uri of uris) {
-            // 1. ファイル自身を追加
             urisToUpdate.add(uri.toString());
 
-            // 2. そのファイルの親グループを遡ってすべて追加
             const node = this.treeDataProvider.getNodeByUri(uri);
             if (node) {
                 let parent = this.treeDataProvider.getParentSync(node); 
                 while (parent) {
                     const parentUri = this.treeDataProvider.getGroupUri(parent);
                     urisToUpdate.add(parentUri.toString());
-                    
-                    // さらに上の親へ
                     parent = this.treeDataProvider.getParentSync(parent);
                 }
             }
         }
-
-        // Setから配列に戻して通知
         const uriList = Array.from(urisToUpdate).map(u => vscode.Uri.parse(u));
         this._onDidChangeFileDecorations.fire(uriList);
     }
@@ -250,7 +233,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     private storageKey = 'customExplorerData';
     private data: MyNode[] = [];
 
-    // ★ パス検索用と、URI検索用のインデックス
+    // インデックス
     private pathIndex: Map<string, MyNode> = new Map();
     private uriToNodeMap: Map<string, MyNode> = new Map();
 
@@ -265,14 +248,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return this.pathIndex.get(targetPath);
     }
 
-    // ★ 追加: URIからノードを取得する（FileDecorationProviderで使用）
     public getNodeByUri(uri: vscode.Uri): MyNode | undefined {
         return this.uriToNodeMap.get(uri.toString());
     }
 
-    // ★ 追加: グループノード用の一意なURIを生成する
     public getGroupUri(node: MyNode): vscode.Uri {
-        // グループに一意なURIを持たせる（custom-explorerスキームを使用）
         return vscode.Uri.parse(`custom-explorer://group/${node.id}`);
     }
 
@@ -282,13 +262,13 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         
         const traverse = (nodes: MyNode[]) => {
             for (const node of nodes) {
-                if (node.type === 'file' && node.filePath) {
+                // filePathを持つ要素（ファイル または インポートされたフォルダ）をインデックス化
+                if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
-                    // ファイルURIで引けるように
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
                 }
                 
-                // ★ 追加: グループもURIで引けるようにする
+                // グループの場合は専用URIでも引けるようにする
                 if (node.type === 'group') {
                     const groupUri = this.getGroupUri(node);
                     this.uriToNodeMap.set(groupUri.toString(), node);
@@ -300,6 +280,66 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             }
         };
         traverse(this.data);
+    }
+
+    // ★ リネーム同期機能
+    public handleFileRename(files: ReadonlyArray<{ oldUri: vscode.Uri, newUri: vscode.Uri }>) {
+        let isChanged = false;
+
+        for (const file of files) {
+            const oldPath = file.oldUri.fsPath;
+            const newPath = file.newUri.fsPath;
+
+            // 古いパスに一致するノードを探す
+            const targetNode = this.pathIndex.get(oldPath);
+            
+            if (targetNode) {
+                // ラベルと自身のパスを更新
+                targetNode.label = path.basename(newPath);
+                targetNode.filePath = newPath;
+
+                // 子孫要素のパスも更新（フォルダリネームの場合）
+                this.updatePathRecursive(targetNode, oldPath, newPath);
+                
+                isChanged = true;
+            }
+        }
+
+        if (isChanged) {
+            this.saveAndRefresh();
+        }
+    }
+
+    private updatePathRecursive(node: MyNode, oldPrefix: string, newPrefix: string) {
+        // 子供がいる場合、再帰的にパスを置換
+        if (node.children) {
+            node.children.forEach(child => {
+                if (child.filePath && child.filePath.startsWith(oldPrefix)) {
+                    // パスの前方一致部分を置換
+                    // 例: /old/dir/file.txt -> /new/dir/file.txt
+                    // substringで正確に切り取る
+                    const relativePath = child.filePath.substring(oldPrefix.length);
+                    child.filePath = newPrefix + relativePath;
+                }
+                this.updatePathRecursive(child, oldPrefix, newPrefix);
+            });
+        }
+    }
+
+    // ★ 削除同期機能
+    public handleFileDelete(files: readonly vscode.Uri[]) {
+        let isChanged = false;
+        for (const uri of files) {
+            const node = this.pathIndex.get(uri.fsPath);
+            if (node) {
+                // 保存は最後にまとめて行うため false
+                this.removeNode(node, false);
+                isChanged = true;
+            }
+        }
+        if (isChanged) {
+            this.saveAndRefresh();
+        }
     }
 
     getTreeItem(element: MyNode): vscode.TreeItem {
@@ -321,7 +361,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                 arguments: [treeItem.resourceUri]
             };
         } else {
-            // ★ グループにも resourceUri をセットする（DecorationProviderのため）
             treeItem.resourceUri = this.getGroupUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
         }
@@ -337,7 +376,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return this.findParent(this.data, element);
     }
 
-    // ★ 同期的に親を取得するメソッド（イベント発火時の高速化用）
     public getParentSync(element: MyNode): MyNode | undefined {
         return this.findParent(this.data, element);
     }
@@ -421,6 +459,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             label: dirName,
             type: 'group',
             children: [],
+            filePath: dirPath, // ★ 重要: フォルダの場合もパスを保存（リネーム追跡のため）
             collapsibleState: vscode.TreeItemCollapsibleState.Expanded
         };
 
@@ -444,6 +483,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                             label: item.name,
                             type: 'group',
                             children: [],
+                            filePath: fullPath, // ★ サブフォルダもパス保持
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
