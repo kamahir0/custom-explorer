@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "kamahir0",
   "description": "",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "engines": {
     "vscode": "^1.100.0"
   },
