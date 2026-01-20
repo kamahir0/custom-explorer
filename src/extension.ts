@@ -10,6 +10,7 @@ interface MyNode {
     children?: MyNode[];
     filePath?: string; // ファイルだけでなく、インポートしたフォルダの場合もパスを持つ
     collapsibleState?: vscode.TreeItemCollapsibleState;
+    cachedTreePath?: string; // ★ ツリー内の論理パスのキャッシュ（パフォーマンス最適化）
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -271,47 +272,9 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return vscode.Uri.parse(`custom-explorer://group/${node.id}`);
     }
 
-    // ★ ツリー内での論理パスを計算
-    private getTreePath(node: MyNode): string {
-        const buildPath = (target: MyNode, currentPath: string[] = []): string[] | null => {
-            // ルートレベルを探索
-            for (const rootNode of this.data) {
-                if (rootNode === target) {
-                    return [...currentPath, rootNode.label];
-                }
-                if (rootNode.children) {
-                    const result = searchInChildren(rootNode, target, [...currentPath, rootNode.label]);
-                    if (result) return result;
-                }
-            }
-            return null;
-        };
-
-        const searchInChildren = (parent: MyNode, target: MyNode, currentPath: string[]): string[] | null => {
-            if (!parent.children) return null;
-            for (const child of parent.children) {
-                if (child === target) {
-                    return [...currentPath, child.label];
-                }
-                if (child.children) {
-                    const result = searchInChildren(child, target, [...currentPath, child.label]);
-                    if (result) return result;
-                }
-            }
-            return null;
-        };
-
-        const pathArray = buildPath(node);
-        if (pathArray) {
-            return '/' + pathArray.join('/');
-        }
-        return '/' + node.label; // フォールバック
-    }
-
-    // ★ カスタムエクスプローラー用のURIを生成
+    // ★ カスタムエクスプローラー用のURIを生成（キャッシュされた論理パスを使用）
     public getCustomExplorerUri(node: MyNode): vscode.Uri {
-        const treePath = this.getTreePath(node);
-        // パスをエンコードしてURIに含める
+        const treePath = node.cachedTreePath || ('/' + node.label); // キャッシュがあればそれを使用
         return vscode.Uri.parse(`custom-explorer://tree${treePath}`);
     }
 
@@ -319,8 +282,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
 
-        const traverse = (nodes: MyNode[]) => {
+        const traverse = (nodes: MyNode[], parentPath: string = '') => {
             for (const node of nodes) {
+                // ★ 論理パスをキャッシュ（パフォーマンス最適化）
+                node.cachedTreePath = parentPath + '/' + node.label;
+
                 // filePathを持つ要素（ファイル または インポートされたフォルダ）をインデックス化
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
@@ -338,7 +304,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                 this.uriToNodeMap.set(customUri.toString(), node);
 
                 if (node.children) {
-                    traverse(node.children);
+                    traverse(node.children, node.cachedTreePath);
                 }
             }
         };
@@ -614,7 +580,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             }
         };
         targets.forEach(target => resetNodeState(target));
-        this.saveData();
+
+        // ★ 展開/折りたたみは論理パスに影響しないため、rebuildIndex()は不要
+        this.sortNodesRecursive(this.data);
+        this.context.workspaceState.update(this.storageKey, this.data);
 
         if (node) {
             this.refreshParentOrRoot(node);
@@ -635,7 +604,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
             }
         };
         targets.forEach(target => resetNodeState(target));
-        this.saveData();
+
+        // ★ 展開/折りたたみは論理パスに影響しないため、rebuildIndex()は不要
+        this.sortNodesRecursive(this.data);
+        this.context.workspaceState.update(this.storageKey, this.data);
 
         if (node) {
             this.refreshParentOrRoot(node);
