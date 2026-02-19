@@ -14,27 +14,6 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
-    "configuration": {
-      "title": "Custom Explorer",
-      "properties": {
-        "customExplorer.excludeExtensions": {
-          "type": "array",
-          "default": [
-            ".prefab",
-            ".unity",
-            ".preset",
-            ".asmdef",
-            ".asset",
-            ".mat",
-            ".meta",
-            ".DS_Store",
-            ".git",
-            ".gitignore"
-          ],
-          "description": "カスタムエクスプローラーに追加しないファイル拡張子やファイル名を設定します（例: .meta, .git）"
-        }
-      }
-    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -168,13 +147,17 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.100.0",
+    "@types/minimatch": "^5.1.2",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.52.0",
+    "@types/vscode": "^1.100.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.2",
     "typescript": "^5.9.3",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.52.0"
+  },
+  "dependencies": {
+    "minimatch": "^5.1.6"
   }
 }

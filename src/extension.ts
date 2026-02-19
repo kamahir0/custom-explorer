@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import minimatch = require('minimatch');
 import * as fs from 'fs';
 
 // ■ データ構造の定義
@@ -67,6 +68,13 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.handleFileDelete(e.files);
     }));
 
+    // ★ 追加: 設定変更の監視 (files.exclude が変更されたらツリーを更新)
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('files.exclude')) {
+            treeDataProvider.refresh();
+        }
+    }));
+
     // --- コマンド登録 ---
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.importFromWorkspace', async () => {
@@ -76,13 +84,13 @@ export function activate(context: vscode.ExtensionContext) {
             canSelectFiles: true,
             canSelectFolders: true
         };
-       
+
         const fileUri = await vscode.window.showOpenDialog(options);
 
         if (fileUri && fileUri[0]) {
             const targetUri = fileUri[0];
             const stat = await vscode.workspace.fs.stat(targetUri);
-            
+
             if (stat.type === vscode.FileType.Directory) {
                 treeDataProvider.importDirectory(targetUri.fsPath);
             } else {
@@ -498,16 +506,83 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // --- データ操作ロジック ---
 
-    // ★ 設定から除外リストを読み取って判定するメソッド
+    // ★ files.exclude 設定を読み取って判定するメソッド
     private shouldExclude(filePath: string): boolean {
-        const config = vscode.workspace.getConfiguration('customExplorer');
-        const excludes = config.get<string[]>('excludeExtensions') || [];
+        const config = vscode.workspace.getConfiguration('files', vscode.Uri.file(filePath));
+        const excludes = config.get<{ [key: string]: boolean }>('exclude') || {};
 
+        // ワークスペース相対パスを取得
+        // rootPath が undefined の場合はそのまま filePath を使うなど考慮が必要だが、
+        // vscode.workspace.asRelativePath はワークスペース外ならそのままパスを返す仕様。
+        const relativePath = vscode.workspace.asRelativePath(filePath, false).split(path.sep).join('/');
         const fileName = path.basename(filePath);
 
-        // 拡張子またはファイル名の後方一致でチェック
-        // 例: ".meta" が設定にある場合、"file.meta" は除外される
-        return excludes.some(ext => fileName.endsWith(ext));
+        for (const pattern in excludes) {
+            if (excludes[pattern]) { // true の場合のみ除外
+                // パターンが "/" を含まない場合はファイル名のみでマッチング (matchBase相当)
+                // "node_modules" のようなディレクトリ指定も考慮
+                // minimatch の matchBase: true は "basename" に対してパターンを適用するわけではなく、
+                // "path contains pattern" 的な挙動に近いが、正確には "pattern contains slash" で挙動が変わる。
+
+                // VSCodeの挙動に近づけるため、以下のように判定
+                // 1. パターンにスラッシュがない -> ファイル名(basename)と比較
+                // 2. パターンにスラッシュがある -> 相対パスと比較
+
+                const hasSlash = pattern.includes('/');
+
+                if (!hasSlash) {
+                    if (minimatch(fileName, pattern, { dot: true })) return true;
+                } else {
+                    // "foo/" のようなディレクトリエントリの場合、相対パスがそのディレクトリ配下かチェック
+                    // minimatchは "foo" で "foo/bar" にマッチしないが、"foo/**" ならマッチする。
+                    // VSCodeのfiles.excludeは "node_modules": true で node_modules以下のファイルを隠す。
+
+                    // パターンの末尾が / ならディレクトリ除外とみなす
+                    if (pattern.endsWith('/')) {
+                        if (relativePath.startsWith(pattern) || relativePath === pattern.slice(0, -1)) return true;
+                    }
+
+                    if (minimatch(relativePath, pattern, { dot: true })) return true;
+                }
+
+                // 念のため matchBase: true でもチェック (既存ロジックの補完)
+                if (minimatch(relativePath, pattern, { dot: true, matchBase: true })) return true;
+            }
+        }
+        return false;
+    }
+
+    // ★ 設定変更時に外部から呼ぶためのリフレッシュメソッド
+    public refresh() {
+        // 全ノードに対して再帰的に除外チェックを行い、除外対象なら削除する
+        // 逆に、除外設定が解除されたら復活させる...のは元データが残っていないと無理。
+        // Custom Explorerの仕様上、「ユーザーが追加したもの」を表示するのが基本なので、
+        // 「除外設定にマッチするものは表示しない（追加もしない）」という挙動で正しい。
+        // すでに追加されているものが除外設定変更で消えるべき。
+        // 復活はユーザーが再度追加する必要がある？ -> いや、データとしては持っておいて表示だけ消すのが理想だが、
+        // 現在のデータ構造(MyNode)は「表示データ = 保存データ」なので、削除すると消える。
+        // つまり「除外設定にマッチしたらツリーから削除」が正しい挙動となる。
+
+        let isChanged = false;
+        const checkAndRemove = (nodes: MyNode[]): boolean => {
+            let localChanged = false;
+            for (let i = nodes.length - 1; i >= 0; i--) {
+                const node = nodes[i];
+                if (node.filePath && this.shouldExclude(node.filePath)) {
+                    nodes.splice(i, 1);
+                    localChanged = true;
+                } else if (node.children) {
+                    if (checkAndRemove(node.children)) {
+                        localChanged = true;
+                    }
+                }
+            }
+            return localChanged;
+        };
+
+        if (checkAndRemove(this.data)) {
+            this.saveAndRefresh();
+        }
     }
 
     public importDirectory(dirPath: string, parent?: MyNode) {
