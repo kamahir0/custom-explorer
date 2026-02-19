@@ -68,10 +68,26 @@ export function activate(context: vscode.ExtensionContext) {
 
     // --- コマンド登録 ---
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addRootGroup', async () => {
-        const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
-        if (!label) return;
-        treeDataProvider.addGroup(label, undefined);
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.importFromWorkspace', async () => {
+        const options: vscode.OpenDialogOptions = {
+            canSelectMany: false,
+            openLabel: '追加',
+            canSelectFiles: true,
+            canSelectFolders: true
+        };
+       
+        const fileUri = await vscode.window.showOpenDialog(options);
+
+        if (fileUri && fileUri[0]) {
+            const targetUri = fileUri[0];
+            const stat = await vscode.workspace.fs.stat(targetUri);
+            
+            if (stat.type === vscode.FileType.Directory) {
+                treeDataProvider.importDirectory(targetUri.fsPath);
+            } else {
+                treeDataProvider.addFile(targetUri.fsPath);
+            }
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroup', async (node?: MyNode) => {
