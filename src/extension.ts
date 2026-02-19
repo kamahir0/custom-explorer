@@ -423,8 +423,24 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     getChildren(element?: MyNode): vscode.ProviderResult<MyNode[]> {
-        if (!element) return this.data;
-        return element.children || [];
+        if (!element) {
+            // ルート要素のフィルタリング
+            return this.data.filter(node => {
+                if (node.filePath && this.shouldExclude(node.filePath)) {
+                    return false;
+                }
+                return true;
+            });
+        }
+
+        // 子要素のフィルタリング
+        const children = element.children || [];
+        return children.filter(node => {
+            if (node.filePath && this.shouldExclude(node.filePath)) {
+                return false;
+            }
+            return true;
+        });
     }
 
     getParent(element: MyNode): vscode.ProviderResult<MyNode> {
@@ -554,35 +570,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
 
     // ★ 設定変更時に外部から呼ぶためのリフレッシュメソッド
     public refresh() {
-        // 全ノードに対して再帰的に除外チェックを行い、除外対象なら削除する
-        // 逆に、除外設定が解除されたら復活させる...のは元データが残っていないと無理。
-        // Custom Explorerの仕様上、「ユーザーが追加したもの」を表示するのが基本なので、
-        // 「除外設定にマッチするものは表示しない（追加もしない）」という挙動で正しい。
-        // すでに追加されているものが除外設定変更で消えるべき。
-        // 復活はユーザーが再度追加する必要がある？ -> いや、データとしては持っておいて表示だけ消すのが理想だが、
-        // 現在のデータ構造(MyNode)は「表示データ = 保存データ」なので、削除すると消える。
-        // つまり「除外設定にマッチしたらツリーから削除」が正しい挙動となる。
-
-        let isChanged = false;
-        const checkAndRemove = (nodes: MyNode[]): boolean => {
-            let localChanged = false;
-            for (let i = nodes.length - 1; i >= 0; i--) {
-                const node = nodes[i];
-                if (node.filePath && this.shouldExclude(node.filePath)) {
-                    nodes.splice(i, 1);
-                    localChanged = true;
-                } else if (node.children) {
-                    if (checkAndRemove(node.children)) {
-                        localChanged = true;
-                    }
-                }
-            }
-            return localChanged;
-        };
-
-        if (checkAndRemove(this.data)) {
-            this.saveAndRefresh();
-        }
+        // 以前はここで除外対象を削除していましたが、
+        // 「非表示（ソフト除外）」にするため、データは削除せずツリー更新イベントのみ発火します。
+        // これにより、files.exclude 設定を解除するとアイテムが復活します。
+        this._onDidChangeTreeData.fire();
     }
 
     public importDirectory(dirPath: string, parent?: MyNode) {
