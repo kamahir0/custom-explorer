@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import minimatch = require('minimatch');
+import { minimatch } from 'minimatch';
 import * as fs from 'fs';
 
 // ■ データ構造の定義
