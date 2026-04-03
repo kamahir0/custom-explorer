@@ -461,7 +461,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             if (element.type === 'linked-group') {
-                treeItem.iconPath = new vscode.ThemeIcon('link', new vscode.ThemeColor('list.foreground'));
+                treeItem.iconPath = new vscode.ThemeIcon('link', new vscode.ThemeColor('editorInfo.foreground'));
             } else {
                 treeItem.iconPath = vscode.ThemeIcon.Folder;
             }
