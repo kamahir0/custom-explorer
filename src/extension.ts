@@ -105,6 +105,10 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.addGroup(label, node);
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.createNewFolder', async (node?: MyNode) => {
+        treeDataProvider.addGroup('New Folder', node, vscode.TreeItemCollapsibleState.Collapsed);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.renameEntry', async (node: MyNode) => {
         const newName = await vscode.window.showInputBox({
             prompt: '新しい名前を入力してください',
@@ -745,13 +749,13 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    public addGroup(label: string, parent?: MyNode) {
+    public addGroup(label: string, parent?: MyNode, collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Expanded) {
         const newNode: MyNode = {
             id: this.generateId(),
             label,
             type: 'group',
             children: [],
-            collapsibleState: vscode.TreeItemCollapsibleState.Expanded
+            collapsibleState
         };
         if (parent && parent.type === 'group') {
             parent.children = parent.children || [];

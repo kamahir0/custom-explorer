@@ -35,7 +35,7 @@
     "viewsWelcome": [
       {
         "view": "custom-explorer-view",
-        "contents": "まだ項目がありません。\n[項目を追加...](command:customExplorer.importFromWorkspace)",
+        "contents": "まだ項目がありません。\n[フォルダを追加](command:customExplorer.createNewFolder)",
         "when": "customExplorer.isEmpty"
       }
     ],
@@ -43,6 +43,11 @@
       {
         "command": "customExplorer.addGroup",
         "title": "新しいフォルダー...",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "customExplorer.createNewFolder",
+        "title": "フォルダを追加",
         "icon": "$(new-folder)"
       },
       {
@@ -84,7 +89,7 @@
     "menus": {
       "view/title": [
         {
-          "command": "customExplorer.importFromWorkspace",
+          "command": "customExplorer.addGroup",
           "when": "view == custom-explorer-view",
           "group": "navigation@1"
         },
