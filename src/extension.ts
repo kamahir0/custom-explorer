@@ -3,79 +3,78 @@ import * as path from 'path';
 import { minimatch } from 'minimatch';
 import * as fs from 'fs';
 
-// ■ データ構造の定義
-interface MyNode {
+// --- Constants ---
+const VIEW_ID = 'custom-explorer-view';
+const STORAGE_KEY = 'customExplorerData';
+const CONTEXT_KEY_IS_EMPTY = 'customExplorer.isEmpty';
+const MIME_INTERNAL = 'application/vnd.code.tree.customExplorer';
+const URI_SCHEME = 'custom-explorer';
+const DEFAULT_FOLDER_NAME = 'New Folder';
+
+// --- Interfaces ---
+interface StoredNode {
     id: string;
     label: string;
     type: 'group' | 'file';
-    children?: MyNode[];
-    filePath?: string; // ファイルだけでなく、インポートしたフォルダの場合もパスを持つ
+    children?: StoredNode[];
+    filePath?: string;
     collapsibleState?: vscode.TreeItemCollapsibleState;
-    cachedTreePath?: string; // ★ ツリー内の論理パスのキャッシュ（パフォーマンス最適化）
+}
+
+interface ExplorerNode extends StoredNode {
+    children?: ExplorerNode[];
+    cachedTreePath?: string;
 }
 
 export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new CustomTreeDataProvider(context);
 
-    // ビューの作成
-    const treeView = vscode.window.createTreeView('custom-explorer-view', {
+    const treeView = vscode.window.createTreeView(VIEW_ID, {
         treeDataProvider: treeDataProvider,
         dragAndDropController: treeDataProvider,
-        canSelectMany: true // ★ これがtrueなので複数選択可能です
+        canSelectMany: true
     });
 
     if (vscode.workspace.name) {
         treeView.title = vscode.workspace.name;
     }
 
-    // ★ 同期機能
     const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
-        if (!editor || !editor.document) return;
-        if (!treeView.visible) return;
-
-        const activeFilePath = editor.document.uri.fsPath;
-        const foundNode = treeDataProvider.findNodeByPath(activeFilePath);
-
+        if (!editor || !editor.document || !treeView.visible) return;
+        const foundNode = treeDataProvider.findNodeByPath(editor.document.uri.fsPath);
         if (foundNode) {
             treeView.reveal(foundNode, { select: true, focus: false, expand: true });
         }
     };
 
-    // 1. 起動時同期
     syncTreeSelection(vscode.window.activeTextEditor);
 
-    // 2. タブ切り替え時同期
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
         syncTreeSelection(editor);
     }));
 
-    // ★ エラー装飾プロバイダの登録
     const decorationProvider = new ProblemFileDecorationProvider(treeDataProvider);
     context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorationProvider));
 
-    // 診断情報の監視（エラー伝播用）
     context.subscriptions.push(vscode.languages.onDidChangeDiagnostics(e => {
         decorationProvider.fireDidChangeFileDecorations(e.uris);
     }));
 
-    // ★ 追加: ファイルリネームの監視
     context.subscriptions.push(vscode.workspace.onDidRenameFiles(e => {
         treeDataProvider.handleFileRename(e.files);
     }));
 
-    // ★ 追加: ファイル削除の監視
     context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
         treeDataProvider.handleFileDelete(e.files);
     }));
 
-    // ★ 追加: 設定変更の監視 (files.exclude が変更されたらツリーを更新)
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('files.exclude')) {
             treeDataProvider.refresh();
         }
     }));
 
-    // --- コマンド登録 ---
+    // --- Commands ---
 
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.importFromWorkspace', async () => {
         const options: vscode.OpenDialogOptions = {
@@ -99,17 +98,17 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroup', async (node?: MyNode) => {
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroup', async (node?: ExplorerNode) => {
         const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
         if (!label) return;
         treeDataProvider.addGroup(label, node);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.createNewFolder', async (node?: MyNode) => {
-        treeDataProvider.addGroup('New Folder', node, vscode.TreeItemCollapsibleState.Collapsed);
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.createNewFolder', async (node?: ExplorerNode) => {
+        treeDataProvider.addGroup(DEFAULT_FOLDER_NAME, node, vscode.TreeItemCollapsibleState.Collapsed);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.renameEntry', async (node: MyNode) => {
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.renameEntry', async (node: ExplorerNode) => {
         const newName = await vscode.window.showInputBox({
             prompt: '新しい名前を入力してください',
             value: node.label
@@ -118,20 +117,14 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.renameNode(node, newName);
     }));
 
-    // ★ 修正: 複数選択削除 & キーボードショートカット対応
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node?: MyNode, nodes?: MyNode[]) => {
-        // 削除対象リストを作成
-        const targets: MyNode[] = [];
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.removeEntry', (node?: ExplorerNode, nodes?: ExplorerNode[]) => {
+        const targets: ExplorerNode[] = [];
 
         if (nodes && nodes.length > 0) {
-            // ケース1: 右クリック等で複数選択の配列が渡された場合
             targets.push(...nodes);
         } else if (node) {
-            // ケース2: 単一のアイテムが指定された場合
             targets.push(node);
         } else {
-            // ケース3: 引数がない場合 (Deleteキーなどのショートカット経由)
-            // 現在のツリービューの選択状態を使用する
             if (treeView.selection.length > 0) {
                 targets.push(...treeView.selection);
             }
@@ -139,16 +132,15 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (targets.length === 0) return;
 
-        // まとめて削除実行
-        targets.forEach(n => treeDataProvider.removeNode(n, false)); // 個別の保存はスキップ
-        treeDataProvider.saveAndRefresh(); // 最後に一回保存して更新
+        targets.forEach(n => treeDataProvider.removeNode(n, false));
+        treeDataProvider.saveAndRefresh();
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: MyNode) => {
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.collapseRecursive', (node: ExplorerNode) => {
         treeDataProvider.collapseRecursive(node);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandRecursive', (node: MyNode) => {
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandRecursive', (node: ExplorerNode) => {
         treeDataProvider.expandRecursive(node);
     }));
 
@@ -161,7 +153,6 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 }
 
-// ★ エラー装飾用クラス（親への伝播機能付き）
 class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
 
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined>();
@@ -176,7 +167,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         if (node.type === 'file') {
             return this.getDiagnosticDecoration(uri);
         } else {
-            return this.getGroupDecorationRecursive(node);
+            return this.getGroupDecoration(node);
         }
     }
 
@@ -204,32 +195,10 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         return undefined;
     }
 
-    private getGroupDecorationRecursive(groupNode: MyNode): vscode.FileDecoration | undefined {
+    private getGroupDecoration(groupNode: ExplorerNode): vscode.FileDecoration | undefined {
         if (!groupNode.children || groupNode.children.length === 0) return undefined;
 
-        let hasWarning = false;
-
-        const traverse = (nodes: MyNode[]): string => {
-            for (const child of nodes) {
-                if (child.type === 'file' && child.filePath) {
-                    const uri = vscode.Uri.file(child.filePath);
-                    const diags = vscode.languages.getDiagnostics(uri);
-
-                    if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
-                        return 'error';
-                    }
-                    if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Warning)) {
-                        hasWarning = true;
-                    }
-                } else if (child.type === 'group' && child.children) {
-                    const childResult = traverse(child.children);
-                    if (childResult === 'error') return 'error';
-                }
-            }
-            return hasWarning ? 'warning' : 'none';
-        };
-
-        const result = traverse(groupNode.children);
+        const result = this.traverseDiagnostics(groupNode.children);
 
         if (result === 'error') {
             return {
@@ -248,6 +217,22 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         return undefined;
     }
 
+    private traverseDiagnostics(nodes: ExplorerNode[]): 'error' | 'warning' | 'none' {
+        let hasWarning = false;
+        for (const child of nodes) {
+            if (child.type === 'file' && child.filePath) {
+                const diags = vscode.languages.getDiagnostics(vscode.Uri.file(child.filePath));
+                if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) return 'error';
+                if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Warning)) hasWarning = true;
+            } else if (child.type === 'group' && child.children) {
+                const result = this.traverseDiagnostics(child.children);
+                if (result === 'error') return 'error';
+                if (result === 'warning') hasWarning = true;
+            }
+        }
+        return hasWarning ? 'warning' : 'none';
+    }
+
     public fireDidChangeFileDecorations(uris: ReadonlyArray<vscode.Uri>) {
         const urisToUpdate = new Set<string>();
 
@@ -256,11 +241,11 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
 
             const node = this.treeDataProvider.getNodeByUri(uri);
             if (node) {
-                let parent = this.treeDataProvider.getParentSync(node);
+                let parent = this.treeDataProvider.getParent(node);
                 while (parent) {
                     const parentUri = this.treeDataProvider.getGroupUri(parent);
                     urisToUpdate.add(parentUri.toString());
-                    parent = this.treeDataProvider.getParentSync(parent);
+                    parent = this.treeDataProvider.getParent(parent);
                 }
             }
         }
@@ -269,65 +254,57 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
     }
 }
 
-class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.TreeDragAndDropController<MyNode> {
+class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, vscode.TreeDragAndDropController<ExplorerNode> {
 
-    private _onDidChangeTreeData: vscode.EventEmitter<MyNode | undefined | null | void> = new vscode.EventEmitter<MyNode | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<MyNode | undefined | null | void> = this._onDidChangeTreeData.event;
+    private _onDidChangeTreeData: vscode.EventEmitter<ExplorerNode | undefined | null | void> = new vscode.EventEmitter<ExplorerNode | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<ExplorerNode | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    private storageKey = 'customExplorerData';
-    private data: MyNode[] = [];
+    private data: ExplorerNode[] = [];
+    private pathIndex: Map<string, ExplorerNode> = new Map();
+    private uriToNodeMap: Map<string, ExplorerNode> = new Map();
 
-    // インデックス
-    private pathIndex: Map<string, MyNode> = new Map();
-    private uriToNodeMap: Map<string, MyNode> = new Map();
-
-    public dropMimeTypes = ['application/vnd.code.tree.customExplorer', 'text/uri-list', 'text/plain'];
-    public dragMimeTypes = ['application/vnd.code.tree.customExplorer'];
+    public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
+    public dragMimeTypes = [MIME_INTERNAL];
 
     constructor(private context: vscode.ExtensionContext) {
         this.loadData();
     }
 
-    public findNodeByPath(targetPath: string): MyNode | undefined {
+    public findNodeByPath(targetPath: string): ExplorerNode | undefined {
         return this.pathIndex.get(targetPath);
     }
 
-    public getNodeByUri(uri: vscode.Uri): MyNode | undefined {
+    public getNodeByUri(uri: vscode.Uri): ExplorerNode | undefined {
         return this.uriToNodeMap.get(uri.toString());
     }
 
-    public getGroupUri(node: MyNode): vscode.Uri {
-        return vscode.Uri.parse(`custom-explorer://group/${node.id}`);
+    public getGroupUri(node: ExplorerNode): vscode.Uri {
+        return vscode.Uri.parse(`${URI_SCHEME}://group/${node.id}`);
     }
 
-    // ★ カスタムエクスプローラー用のURIを生成（キャッシュされた論理パスを使用）
-    public getCustomExplorerUri(node: MyNode): vscode.Uri {
-        const treePath = node.cachedTreePath || ('/' + node.label); // キャッシュがあればそれを使用
-        return vscode.Uri.parse(`custom-explorer://tree${treePath}`);
+    public getCustomExplorerUri(node: ExplorerNode): vscode.Uri {
+        const treePath = node.cachedTreePath || ('/' + node.label);
+        return vscode.Uri.parse(`${URI_SCHEME}://tree${treePath}`);
     }
 
     private rebuildIndex() {
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
 
-        const traverse = (nodes: MyNode[], parentPath: string = '') => {
+        const traverse = (nodes: ExplorerNode[], parentPath: string = '') => {
             for (const node of nodes) {
-                // ★ 論理パスをキャッシュ（パフォーマンス最適化）
                 node.cachedTreePath = parentPath + '/' + node.label;
 
-                // filePathを持つ要素（ファイル または インポートされたフォルダ）をインデックス化
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
                 }
 
-                // グループの場合は専用URIでも引けるようにする
                 if (node.type === 'group') {
                     const groupUri = this.getGroupUri(node);
                     this.uriToNodeMap.set(groupUri.toString(), node);
                 }
 
-                // ★ 全てのノードでカスタムエクスプローラーURIでも引けるようにする
                 const customUri = this.getCustomExplorerUri(node);
                 this.uriToNodeMap.set(customUri.toString(), node);
 
@@ -339,25 +316,18 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         traverse(this.data);
     }
 
-    // ★ リネーム同期機能
     public handleFileRename(files: ReadonlyArray<{ oldUri: vscode.Uri, newUri: vscode.Uri }>) {
         let isChanged = false;
 
         for (const file of files) {
             const oldPath = file.oldUri.fsPath;
             const newPath = file.newUri.fsPath;
-
-            // 古いパスに一致するノードを探す
             const targetNode = this.pathIndex.get(oldPath);
 
             if (targetNode) {
-                // ラベルと自身のパスを更新
                 targetNode.label = path.basename(newPath);
                 targetNode.filePath = newPath;
-
-                // 子孫要素のパスも更新（フォルダリネームの場合）
                 this.updatePathRecursive(targetNode, oldPath, newPath);
-
                 isChanged = true;
             }
         }
@@ -367,14 +337,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    private updatePathRecursive(node: MyNode, oldPrefix: string, newPrefix: string) {
-        // 子供がいる場合、再帰的にパスを置換
+    private updatePathRecursive(node: ExplorerNode, oldPrefix: string, newPrefix: string) {
         if (node.children) {
             node.children.forEach(child => {
                 if (child.filePath && child.filePath.startsWith(oldPrefix)) {
-                    // パスの前方一致部分を置換
-                    // 例: /old/dir/file.txt -> /new/dir/file.txt
-                    // substringで正確に切り取る
                     const relativePath = child.filePath.substring(oldPrefix.length);
                     child.filePath = newPrefix + relativePath;
                 }
@@ -383,13 +349,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    // ★ 削除同期機能
     public handleFileDelete(files: readonly vscode.Uri[]) {
         let isChanged = false;
         for (const uri of files) {
             const node = this.pathIndex.get(uri.fsPath);
             if (node) {
-                // 保存は最後にまとめて行うため false
                 this.removeNode(node, false);
                 isChanged = true;
             }
@@ -399,7 +363,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    getTreeItem(element: MyNode): vscode.TreeItem {
+    getTreeItem(element: ExplorerNode): vscode.TreeItem {
         const treeItem = new vscode.TreeItem(
             element.label,
             element.type === 'group'
@@ -411,7 +375,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         treeItem.id = element.id;
 
         if (element.type === 'file' && element.filePath) {
-            // ★ ファイルの場合は実際のファイルパスを表示
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = {
                 command: 'vscode.open',
@@ -419,43 +382,22 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                 arguments: [treeItem.resourceUri]
             };
         } else {
-            // ★ フォルダの場合はカスタムエクスプローラー内の論理パスを表示
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
         }
         return treeItem;
     }
 
-    getChildren(element?: MyNode): vscode.ProviderResult<MyNode[]> {
-        if (!element) {
-            // ルート要素のフィルタリング
-            return this.data.filter(node => {
-                if (node.filePath && this.shouldExclude(node.filePath)) {
-                    return false;
-                }
-                return true;
-            });
-        }
-
-        // 子要素のフィルタリング
-        const children = element.children || [];
-        return children.filter(node => {
-            if (node.filePath && this.shouldExclude(node.filePath)) {
-                return false;
-            }
-            return true;
-        });
+    getChildren(element?: ExplorerNode): ExplorerNode[] {
+        const nodes = element ? (element.children ?? []) : this.data;
+        return nodes.filter(n => !n.filePath || !this.shouldExclude(n.filePath));
     }
 
-    getParent(element: MyNode): vscode.ProviderResult<MyNode> {
+    getParent(element: ExplorerNode): ExplorerNode | undefined {
         return this.findParent(this.data, element);
     }
 
-    public getParentSync(element: MyNode): MyNode | undefined {
-        return this.findParent(this.data, element);
-    }
-
-    private findParent(nodes: MyNode[], target: MyNode): MyNode | undefined {
+    private findParent(nodes: ExplorerNode[], target: ExplorerNode): ExplorerNode | undefined {
         for (const node of nodes) {
             if (node.children && node.children.includes(target)) {
                 return node;
@@ -468,17 +410,17 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return undefined;
     }
 
-    // --- D&D の実装 ---
+    // --- Drag and Drop ---
 
-    public handleDrag(source: readonly MyNode[], dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): void | Thenable<void> {
-        dataTransfer.set('application/vnd.code.tree.customExplorer', new vscode.DataTransferItem(source));
+    public handleDrag(source: readonly ExplorerNode[], dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): void {
+        dataTransfer.set(MIME_INTERNAL, new vscode.DataTransferItem(source));
     }
 
-    public async handleDrop(target: MyNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
+    public async handleDrop(target: ExplorerNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
 
-        const internalDrag = dataTransfer.get('application/vnd.code.tree.customExplorer');
+        const internalDrag = dataTransfer.get(MIME_INTERNAL);
         if (internalDrag) {
-            const sources: MyNode[] = internalDrag.value;
+            const sources: ExplorerNode[] = internalDrag.value;
             this.moveNodes(sources, target);
             return;
         }
@@ -494,70 +436,44 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
 
         if (uriString) {
-            const rawPaths = uriString.split(/\r?\n/);
-
-            for (const rawPath of rawPaths) {
-                const trimmedPath = rawPath.trim();
-                if (!trimmedPath) continue;
-
-                try {
-                    let fsPath: string;
-                    if (trimmedPath.startsWith('file://')) {
-                        fsPath = vscode.Uri.parse(trimmedPath).fsPath;
-                    } else {
-                        fsPath = trimmedPath;
-                    }
-
-                    if (!fs.existsSync(fsPath)) continue;
-
-                    const stat = fs.statSync(fsPath);
-
-                    if (stat.isDirectory()) {
-                        this.importDirectory(fsPath, target);
-                    } else {
-                        this.addFile(fsPath, target);
-                    }
-                } catch (e) {
-                    console.error('Drop failed for path:', trimmedPath, e);
+            const paths = this.resolveDroppedPaths(uriString);
+            for (const fsPath of paths) {
+                const stat = fs.statSync(fsPath);
+                if (stat.isDirectory()) {
+                    this.importDirectory(fsPath, target);
+                } else {
+                    this.addFile(fsPath, target);
                 }
             }
         }
     }
 
-    // --- データ操作ロジック ---
+    private resolveDroppedPaths(uriString: string): string[] {
+        return uriString
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean)
+            .map(raw => raw.startsWith('file://') ? vscode.Uri.parse(raw).fsPath : raw)
+            .filter(p => fs.existsSync(p));
+    }
 
-    // ★ files.exclude 設定を読み取って判定するメソッド
+    // --- Data Operations ---
+
     private shouldExclude(filePath: string): boolean {
         const config = vscode.workspace.getConfiguration('files', vscode.Uri.file(filePath));
         const excludes = config.get<{ [key: string]: boolean }>('exclude') || {};
 
-        // ワークスペース相対パスを取得
-        // rootPath が undefined の場合はそのまま filePath を使うなど考慮が必要だが、
-        // vscode.workspace.asRelativePath はワークスペース外ならそのままパスを返す仕様。
         const relativePath = vscode.workspace.asRelativePath(filePath, false).split(path.sep).join('/');
         const fileName = path.basename(filePath);
 
         for (const pattern in excludes) {
-            if (excludes[pattern]) { // true の場合のみ除外
-                // パターンが "/" を含まない場合はファイル名のみでマッチング (matchBase相当)
-                // "node_modules" のようなディレクトリ指定も考慮
-                // minimatch の matchBase: true は "basename" に対してパターンを適用するわけではなく、
-                // "path contains pattern" 的な挙動に近いが、正確には "pattern contains slash" で挙動が変わる。
-
-                // VSCodeの挙動に近づけるため、以下のように判定
-                // 1. パターンにスラッシュがない -> ファイル名(basename)と比較
-                // 2. パターンにスラッシュがある -> 相対パスと比較
-
+            if (excludes[pattern]) {
+                // Pattern without '/' matches by basename; pattern with '/' matches by relative path
                 const hasSlash = pattern.includes('/');
 
                 if (!hasSlash) {
                     if (minimatch(fileName, pattern, { dot: true })) return true;
                 } else {
-                    // "foo/" のようなディレクトリエントリの場合、相対パスがそのディレクトリ配下かチェック
-                    // minimatchは "foo" で "foo/bar" にマッチしないが、"foo/**" ならマッチする。
-                    // VSCodeのfiles.excludeは "node_modules": true で node_modules以下のファイルを隠す。
-
-                    // パターンの末尾が / ならディレクトリ除外とみなす
                     if (pattern.endsWith('/')) {
                         if (relativePath.startsWith(pattern) || relativePath === pattern.slice(0, -1)) return true;
                     }
@@ -565,60 +481,48 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                     if (minimatch(relativePath, pattern, { dot: true })) return true;
                 }
 
-                // 念のため matchBase: true でもチェック (既存ロジックの補完)
                 if (minimatch(relativePath, pattern, { dot: true, matchBase: true })) return true;
             }
         }
         return false;
     }
 
-    // ★ 設定変更時に外部から呼ぶためのリフレッシュメソッド
     public refresh() {
-        // 以前はここで除外対象を削除していましたが、
-        // 「非表示（ソフト除外）」にするため、データは削除せずツリー更新イベントのみ発火します。
-        // これにより、files.exclude 設定を解除するとアイテムが復活します。
         this._onDidChangeTreeData.fire();
     }
 
-    public importDirectory(dirPath: string, parent?: MyNode) {
+    public importDirectory(dirPath: string, parent?: ExplorerNode) {
         const dirName = path.basename(dirPath);
 
-        // ★ ディレクトリ自体の名前も除外チェック
         if (this.shouldExclude(dirName)) return;
 
-        const newGroupNode: MyNode = {
+        const newGroupNode: ExplorerNode = {
             id: this.generateId(),
             label: dirName,
             type: 'group',
             children: [],
-            filePath: dirPath, // ★ 重要: フォルダの場合もパスを保存（リネーム追跡のため）
+            filePath: dirPath,
             collapsibleState: vscode.TreeItemCollapsibleState.Expanded
         };
 
-        if (parent && parent.type === 'group') {
-            parent.children = parent.children || [];
-            parent.children.push(newGroupNode);
-        } else {
-            this.data.push(newGroupNode);
-        }
+        this.appendToParent(newGroupNode, parent);
 
-        const scanRecursive = (currentPath: string, parentNode: MyNode) => {
+        const scanRecursive = (currentPath: string, parentNode: ExplorerNode) => {
             try {
                 const items = fs.readdirSync(currentPath, { withFileTypes: true });
 
                 for (const item of items) {
                     const fullPath = path.join(currentPath, item.name);
 
-                    // ★ 除外設定にマッチしたらスキップ
                     if (this.shouldExclude(item.name)) continue;
 
                     if (item.isDirectory()) {
-                        const subGroup: MyNode = {
+                        const subGroup: ExplorerNode = {
                             id: this.generateId(),
                             label: item.name,
                             type: 'group',
                             children: [],
-                            filePath: fullPath, // ★ サブフォルダもパス保持
+                            filePath: fullPath,
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
@@ -626,10 +530,9 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
                         scanRecursive(fullPath, subGroup);
 
                     } else if (item.isFile()) {
-                        // .DS_Store はハードコードで除外しつつ、設定も見る
                         if (item.name === '.DS_Store') continue;
 
-                        const fileNode: MyNode = {
+                        const fileNode: ExplorerNode = {
                             id: this.generateId(),
                             label: item.name,
                             type: 'file',
@@ -648,28 +551,23 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         this.saveAndRefresh();
     }
 
-
-    public renameNode(node: MyNode, newName: string) {
+    public renameNode(node: ExplorerNode, newName: string) {
         node.label = newName;
         this.saveAndRefresh();
     }
 
-    public collapseRecursive(node?: MyNode) {
-        const targets = node ? [node] : this.data;
-        const resetNodeState = (targetNode: MyNode) => {
-            if (targetNode.type === 'group') {
-                targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
-                targetNode.id = this.generateId();
-                if (targetNode.children) {
-                    targetNode.children.forEach(child => resetNodeState(child));
-                }
-            }
-        };
-        targets.forEach(target => resetNodeState(target));
+    public collapseRecursive(node?: ExplorerNode) {
+        this.applyCollapsibleState(node, vscode.TreeItemCollapsibleState.Collapsed);
+    }
 
-        // ★ 展開/折りたたみは論理パスに影響しないため、rebuildIndex()は不要
-        this.sortNodesRecursive(this.data);
-        this.context.workspaceState.update(this.storageKey, this.data);
+    public expandRecursive(node?: ExplorerNode) {
+        this.applyCollapsibleState(node, vscode.TreeItemCollapsibleState.Expanded);
+    }
+
+    private applyCollapsibleState(node: ExplorerNode | undefined, state: vscode.TreeItemCollapsibleState) {
+        const targets = node ? [node] : this.data;
+        targets.forEach(t => this.setCollapsibleStateRecursive(t, state));
+        this.context.workspaceState.update(STORAGE_KEY, this.data);
 
         if (node) {
             this.refreshParentOrRoot(node);
@@ -678,45 +576,28 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    public expandRecursive(node?: MyNode) {
-        const targets = node ? [node] : this.data;
-        const resetNodeState = (targetNode: MyNode) => {
-            if (targetNode.type === 'group') {
-                targetNode.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-                targetNode.id = this.generateId();
-                if (targetNode.children) {
-                    targetNode.children.forEach(child => resetNodeState(child));
-                }
-            }
-        };
-        targets.forEach(target => resetNodeState(target));
-
-        // ★ 展開/折りたたみは論理パスに影響しないため、rebuildIndex()は不要
-        this.sortNodesRecursive(this.data);
-        this.context.workspaceState.update(this.storageKey, this.data);
-
-        if (node) {
-            this.refreshParentOrRoot(node);
-        } else {
-            this._onDidChangeTreeData.fire(undefined);
+    private setCollapsibleStateRecursive(node: ExplorerNode, state: vscode.TreeItemCollapsibleState) {
+        if (node.type === 'group') {
+            node.collapsibleState = state;
+            node.id = this.generateId();
+            node.children?.forEach(child => this.setCollapsibleStateRecursive(child, state));
         }
     }
 
-    private refreshParentOrRoot(node: MyNode) {
+    private refreshParentOrRoot(node: ExplorerNode) {
         const parent = this.getParent(node);
         if (parent) {
-            // @ts-ignore
             this._onDidChangeTreeData.fire(parent);
         } else {
             this._onDidChangeTreeData.fire(undefined);
         }
     }
 
-    private moveNodes(sources: MyNode[], target: MyNode | undefined) {
-        const isValidMove = (source: MyNode, target?: MyNode): boolean => {
+    private moveNodes(sources: ExplorerNode[], target: ExplorerNode | undefined) {
+        const isValidMove = (source: ExplorerNode, target?: ExplorerNode): boolean => {
             if (source === target) return false;
             if (!target) return true;
-            const isDescendant = (parent: MyNode, potentialChild: MyNode): boolean => {
+            const isDescendant = (parent: ExplorerNode, potentialChild: ExplorerNode): boolean => {
                 if (!parent.children) return false;
                 for (const child of parent.children) {
                     if (child === potentialChild || isDescendant(child, potentialChild)) return true;
@@ -749,53 +630,48 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         }
     }
 
-    public addGroup(label: string, parent?: MyNode, collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Expanded) {
-        const newNode: MyNode = {
+    public addGroup(label: string, parent?: ExplorerNode, collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.Expanded) {
+        const newNode: ExplorerNode = {
             id: this.generateId(),
             label,
             type: 'group',
             children: [],
             collapsibleState
         };
-        if (parent && parent.type === 'group') {
-            parent.children = parent.children || [];
-            parent.children.push(newNode);
-            parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-        } else {
-            this.data.push(newNode);
-        }
+        this.appendToParent(newNode, parent);
         this.saveAndRefresh();
     }
 
-    public addFile(filePath: string, parent?: MyNode) {
+    public addFile(filePath: string, parent?: ExplorerNode) {
         const fileName = path.basename(filePath);
 
-        // ★ 設定チェック
         if (this.shouldExclude(fileName)) return;
 
-        const newNode: MyNode = {
+        const newNode: ExplorerNode = {
             id: this.generateId(),
             label: fileName,
             type: 'file',
             filePath: filePath
         };
 
-        if (parent && parent.type === 'group') {
-            parent.children = parent.children || [];
-            parent.children.push(newNode);
-            parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
-        } else {
-            this.data.push(newNode);
-        }
+        this.appendToParent(newNode, parent);
         this.saveAndRefresh();
     }
 
-    public removeNode(node: MyNode, shouldSave: boolean = true): boolean {
-        // ★ 修正: nodeがundefinedの場合のガードを追加
+    private appendToParent(node: ExplorerNode, parent?: ExplorerNode) {
+        if (parent?.type === 'group') {
+            parent.children = parent.children ?? [];
+            parent.children.push(node);
+            parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+        } else {
+            this.data.push(node);
+        }
+    }
+
+    public removeNode(node: ExplorerNode, shouldSave: boolean = true): boolean {
         if (!node) return false;
 
-        const removeRecursive = (nodes: MyNode[]): boolean => {
-            // node.id が undefined でないことを確認
+        const removeRecursive = (nodes: ExplorerNode[]): boolean => {
             const index = nodes.findIndex(n => n.id === node.id);
             if (index !== -1) {
                 nodes.splice(index, 1);
@@ -812,26 +688,23 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         const result = removeRecursive(this.data);
         if (shouldSave && result) {
             this.saveAndRefresh();
-            // 削除時はインデックス再構築が必要なためsaveAndRefreshを呼ぶ
         }
         return result;
     }
 
     public saveAndRefresh() {
-        this.sortNodesRecursive(this.data);
         this.saveData();
-        // コンテキストの更新
         this.updateContextKey();
         this._onDidChangeTreeData.fire();
     }
 
     private saveData() {
-        this.rebuildIndex();
         this.sortNodesRecursive(this.data);
-        this.context.workspaceState.update(this.storageKey, this.data);
+        this.rebuildIndex();
+        this.context.workspaceState.update(STORAGE_KEY, this.data);
     }
 
-    private sortNodesRecursive(nodes: MyNode[]) {
+    private sortNodesRecursive(nodes: ExplorerNode[]) {
         nodes.sort((a, b) => {
             if (a.type === 'group' && b.type !== 'group') { return -1; }
             if (a.type !== 'group' && b.type === 'group') { return 1; }
@@ -846,9 +719,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
     }
 
     private loadData() {
-        this.data = this.context.workspaceState.get<MyNode[]>(this.storageKey) || [];
+        this.data = this.context.workspaceState.get<ExplorerNode[]>(STORAGE_KEY) || [];
         this.rebuildIndex();
-        // コンテキストの初期化
         this.updateContextKey();
     }
 
@@ -856,9 +728,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<MyNode>, vscode.
         return Math.random().toString(36).substring(2, 15);
     }
 
-    // ★ 追加: 空かどうかのコンテキストを更新するメソッド
     private updateContextKey() {
-        // データが空なら true
-        vscode.commands.executeCommand('setContext', 'customExplorer.isEmpty', this.data.length === 0);
+        vscode.commands.executeCommand('setContext', CONTEXT_KEY_IS_EMPTY, this.data.length === 0);
     }
 }
