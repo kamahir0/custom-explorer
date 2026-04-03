@@ -15,9 +15,10 @@ const DEFAULT_FOLDER_NAME = 'New Folder';
 interface StoredNode {
     id: string;
     label: string;
-    type: 'group' | 'file';
+    type: 'group' | 'file' | 'linked-group';
     children?: StoredNode[];
     filePath?: string;
+    linkedPath?: string;
     collapsibleState?: vscode.TreeItemCollapsibleState;
 }
 
@@ -151,6 +152,12 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.expandAll', () => {
         treeDataProvider.expandRecursive(undefined);
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.unlinkFolder', (node: ExplorerNode) => {
+        treeDataProvider.unlinkFolder(node);
+    }));
+
+    context.subscriptions.push({ dispose: () => treeDataProvider.disposeAllWatchers() });
 }
 
 class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
@@ -224,7 +231,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
                 const diags = vscode.languages.getDiagnostics(vscode.Uri.file(child.filePath));
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) return 'error';
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Warning)) hasWarning = true;
-            } else if (child.type === 'group' && child.children) {
+            } else if ((child.type === 'group' || child.type === 'linked-group') && child.children) {
                 const result = this.traverseDiagnostics(child.children);
                 if (result === 'error') return 'error';
                 if (result === 'warning') hasWarning = true;
@@ -262,12 +269,28 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
     private data: ExplorerNode[] = [];
     private pathIndex: Map<string, ExplorerNode> = new Map();
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
+    private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
     public dragMimeTypes = [MIME_INTERNAL];
 
     constructor(private context: vscode.ExtensionContext) {
         this.loadData();
+    }
+
+    private isGroupLike(node: ExplorerNode): boolean {
+        return node.type === 'group' || node.type === 'linked-group';
+    }
+
+    private isChildOfLinkedGroup(node: ExplorerNode): boolean {
+        let current = this.getParent(node);
+        while (current) {
+            if (current.type === 'linked-group') {
+                return true;
+            }
+            current = this.getParent(current);
+        }
+        return false;
     }
 
     public findNodeByPath(targetPath: string): ExplorerNode | undefined {
@@ -287,6 +310,40 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         return vscode.Uri.parse(`${URI_SCHEME}://tree${treePath}`);
     }
 
+    private setupWatcher(node: ExplorerNode): void {
+        if (node.type !== 'linked-group' || !node.linkedPath) {
+            return;
+        }
+
+        try {
+            const pattern = new vscode.RelativePattern(vscode.Uri.file(node.linkedPath), '**/*');
+            const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+            watcher.onDidCreate(() => this.syncLinkedFolder(node));
+            watcher.onDidDelete(() => this.syncLinkedFolder(node));
+            watcher.onDidChange(() => this.syncLinkedFolder(node));
+
+            this.watcherMap.set(node.id, watcher);
+        } catch (err) {
+            console.error(`Failed to setup watcher for ${node.linkedPath}:`, err);
+        }
+    }
+
+    private disposeWatcher(nodeId: string): void {
+        const watcher = this.watcherMap.get(nodeId);
+        if (watcher) {
+            watcher.dispose();
+            this.watcherMap.delete(nodeId);
+        }
+    }
+
+    public disposeAllWatchers(): void {
+        for (const watcher of this.watcherMap.values()) {
+            watcher.dispose();
+        }
+        this.watcherMap.clear();
+    }
+
     private rebuildIndex() {
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
@@ -300,7 +357,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
                 }
 
-                if (node.type === 'group') {
+                if (this.isGroupLike(node)) {
                     const groupUri = this.getGroupUri(node);
                     this.uriToNodeMap.set(groupUri.toString(), node);
                 }
@@ -323,6 +380,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             const oldPath = file.oldUri.fsPath;
             const newPath = file.newUri.fsPath;
             const targetNode = this.pathIndex.get(oldPath);
+
+            // Skip if the node is a child of a linked-group (handled by watcher)
+            if (targetNode && this.isChildOfLinkedGroup(targetNode)) {
+                continue;
+            }
 
             if (targetNode) {
                 targetNode.label = path.basename(newPath);
@@ -353,7 +415,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         let isChanged = false;
         for (const uri of files) {
             const node = this.pathIndex.get(uri.fsPath);
-            if (node) {
+            // Skip if the node is a child of a linked-group (handled by watcher)
+            if (node && !this.isChildOfLinkedGroup(node)) {
                 this.removeNode(node, false);
                 isChanged = true;
             }
@@ -366,12 +429,20 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
     getTreeItem(element: ExplorerNode): vscode.TreeItem {
         const treeItem = new vscode.TreeItem(
             element.label,
-            element.type === 'group'
+            this.isGroupLike(element)
                 ? (element.collapsibleState ?? vscode.TreeItemCollapsibleState.Expanded)
                 : vscode.TreeItemCollapsibleState.None
         );
 
-        treeItem.contextValue = element.type;
+        // Determine contextValue
+        if (element.type === 'linked-group') {
+            treeItem.contextValue = 'linked-group';
+        } else if (this.isChildOfLinkedGroup(element)) {
+            treeItem.contextValue = element.type === 'file' ? 'linked-group-child-file' : 'linked-group-child';
+        } else {
+            treeItem.contextValue = element.type;
+        }
+
         treeItem.id = element.id;
 
         if (element.type === 'file' && element.filePath) {
@@ -383,7 +454,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             };
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
-            treeItem.iconPath = vscode.ThemeIcon.Folder;
+            if (element.type === 'linked-group') {
+                treeItem.iconPath = new vscode.ThemeIcon('link', new vscode.ThemeColor('list.foreground'));
+            } else {
+                treeItem.iconPath = vscode.ThemeIcon.Folder;
+            }
         }
         return treeItem;
     }
@@ -440,7 +515,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             for (const fsPath of paths) {
                 const stat = fs.statSync(fsPath);
                 if (stat.isDirectory()) {
-                    this.importDirectory(fsPath, target);
+                    this.addLinkedFolder(fsPath, target);
                 } else {
                     this.addFile(fsPath, target);
                 }
@@ -489,6 +564,68 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
 
     public refresh() {
         this._onDidChangeTreeData.fire();
+    }
+
+    private syncLinkedFolder(node: ExplorerNode): void {
+        if (node.type !== 'linked-group' || !node.linkedPath) {
+            return;
+        }
+
+        if (!fs.existsSync(node.linkedPath)) {
+            node.children = [];
+            this.saveAndRefresh();
+            return;
+        }
+
+        const scanRecursive = (currentPath: string, parentNode: ExplorerNode) => {
+            try {
+                const items = fs.readdirSync(currentPath, { withFileTypes: true });
+                for (const item of items) {
+                    const fullPath = path.join(currentPath, item.name);
+
+                    if (this.shouldExclude(item.name)) {
+                        continue;
+                    }
+
+                    if (item.isSymbolicLink()) {
+                        continue;
+                    }
+
+                    if (item.isDirectory()) {
+                        const subGroup: ExplorerNode = {
+                            id: this.generateId(),
+                            label: item.name,
+                            type: 'group',
+                            children: [],
+                            filePath: fullPath,
+                            collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
+                        };
+                        parentNode.children = parentNode.children || [];
+                        parentNode.children.push(subGroup);
+                        scanRecursive(fullPath, subGroup);
+                    } else if (item.isFile()) {
+                        if (item.name === '.DS_Store') {
+                            continue;
+                        }
+
+                        const fileNode: ExplorerNode = {
+                            id: this.generateId(),
+                            label: item.name,
+                            type: 'file',
+                            filePath: fullPath
+                        };
+                        parentNode.children = parentNode.children || [];
+                        parentNode.children.push(fileNode);
+                    }
+                }
+            } catch (err) {
+                console.error(`Failed to sync linked folder: ${currentPath}`, err);
+            }
+        };
+
+        node.children = [];
+        scanRecursive(node.linkedPath, node);
+        this.saveAndRefresh();
     }
 
     public importDirectory(dirPath: string, parent?: ExplorerNode) {
@@ -577,7 +714,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
     }
 
     private setCollapsibleStateRecursive(node: ExplorerNode, state: vscode.TreeItemCollapsibleState) {
-        if (node.type === 'group') {
+        if (this.isGroupLike(node)) {
             node.collapsibleState = state;
             node.id = this.generateId();
             node.children?.forEach(child => this.setCollapsibleStateRecursive(child, state));
@@ -595,6 +732,14 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
 
     private moveNodes(sources: ExplorerNode[], target: ExplorerNode | undefined) {
         const isValidMove = (source: ExplorerNode, target?: ExplorerNode): boolean => {
+            // Cannot move linked-group children
+            if (this.isChildOfLinkedGroup(source)) {
+                return false;
+            }
+            // Cannot move into linked-group
+            if (target?.type === 'linked-group') {
+                return false;
+            }
             if (source === target) return false;
             if (!target) return true;
             const isDescendant = (parent: ExplorerNode, potentialChild: ExplorerNode): boolean => {
@@ -613,7 +758,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             const removed = this.removeNode(source, false);
 
             if (removed) {
-                if (target && target.type === 'group') {
+                if (target && this.isGroupLike(target)) {
                     target.children = target.children || [];
                     target.children.push(source);
                     target.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
@@ -658,8 +803,41 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         this.saveAndRefresh();
     }
 
+    public addLinkedFolder(dirPath: string, parent?: ExplorerNode) {
+        const dirName = path.basename(dirPath);
+
+        if (this.shouldExclude(dirName)) {
+            return;
+        }
+
+        const newNode: ExplorerNode = {
+            id: this.generateId(),
+            label: dirName,
+            type: 'linked-group',
+            linkedPath: dirPath,
+            children: [],
+            collapsibleState: vscode.TreeItemCollapsibleState.Expanded
+        };
+
+        this.appendToParent(newNode, parent);
+        this.syncLinkedFolder(newNode);
+        this.setupWatcher(newNode);
+    }
+
+    public unlinkFolder(node: ExplorerNode): void {
+        if (node.type !== 'linked-group') {
+            return;
+        }
+
+        this.disposeWatcher(node.id);
+        node.type = 'group';
+        node.linkedPath = undefined;
+
+        this.saveAndRefresh();
+    }
+
     private appendToParent(node: ExplorerNode, parent?: ExplorerNode) {
-        if (parent?.type === 'group') {
+        if (parent && this.isGroupLike(parent)) {
             parent.children = parent.children ?? [];
             parent.children.push(node);
             parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
@@ -670,6 +848,16 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
 
     public removeNode(node: ExplorerNode, shouldSave: boolean = true): boolean {
         if (!node) return false;
+
+        // Cannot remove linked-group children
+        if (this.isChildOfLinkedGroup(node)) {
+            return false;
+        }
+
+        // Dispose watcher if removing linked-group
+        if (node.type === 'linked-group') {
+            this.disposeWatcher(node.id);
+        }
 
         const removeRecursive = (nodes: ExplorerNode[]): boolean => {
             const index = nodes.findIndex(n => n.id === node.id);
@@ -706,8 +894,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
 
     private sortNodesRecursive(nodes: ExplorerNode[]) {
         nodes.sort((a, b) => {
-            if (a.type === 'group' && b.type !== 'group') { return -1; }
-            if (a.type !== 'group' && b.type === 'group') { return 1; }
+            const aIsGroupLike = this.isGroupLike(a);
+            const bIsGroupLike = this.isGroupLike(b);
+            if (aIsGroupLike && !bIsGroupLike) { return -1; }
+            if (!aIsGroupLike && bIsGroupLike) { return 1; }
             return a.label.localeCompare(b.label);
         });
 
@@ -722,6 +912,20 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         this.data = this.context.workspaceState.get<ExplorerNode[]>(STORAGE_KEY) || [];
         this.rebuildIndex();
         this.updateContextKey();
+
+        // Restore watchers for linked-groups
+        const restoreWatchers = (nodes: ExplorerNode[]) => {
+            for (const node of nodes) {
+                if (node.type === 'linked-group') {
+                    this.syncLinkedFolder(node);
+                    this.setupWatcher(node);
+                }
+                if (node.children) {
+                    restoreWatchers(node.children);
+                }
+            }
+        };
+        restoreWatchers(this.data);
     }
 
     private generateId(): string {

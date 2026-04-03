@@ -84,6 +84,11 @@
         "command": "customExplorer.expandAll",
         "title": "すべて展開",
         "icon": "$(expand-all)"
+      },
+      {
+        "command": "customExplorer.unlinkFolder",
+        "title": "リンク解除（スナップショットに変換）",
+        "icon": "$(link-external)"
       }
     ],
     "menus": {
@@ -112,17 +117,17 @@
         },
         {
           "command": "customExplorer.expandRecursive",
-          "when": "view == custom-explorer-view && viewItem == group",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group || viewItem == linked-group-child)",
           "group": "inline@2"
         },
         {
           "command": "customExplorer.collapseRecursive",
-          "when": "view == custom-explorer-view && viewItem == group",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group || viewItem == linked-group-child)",
           "group": "inline@3"
         },
         {
           "command": "customExplorer.removeEntry",
-          "when": "view == custom-explorer-view",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file || viewItem == linked-group)",
           "group": "inline@4"
         },
         {
@@ -132,12 +137,17 @@
         },
         {
           "command": "customExplorer.renameEntry",
-          "when": "view == custom-explorer-view && viewItem == group",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group)",
           "group": "1_modification@2"
         },
         {
+          "command": "customExplorer.unlinkFolder",
+          "when": "view == custom-explorer-view && viewItem == linked-group",
+          "group": "1_modification@3"
+        },
+        {
           "command": "customExplorer.removeEntry",
-          "when": "view == custom-explorer-view",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file || viewItem == linked-group)",
           "group": "2_destructive@1"
         }
       ]
