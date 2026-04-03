@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -43,6 +43,11 @@
       {
         "command": "customExplorer.addGroup",
         "title": "新しいフォルダー...",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "customExplorer.addGroupToRoot",
+        "title": "新しいフォルダー",
         "icon": "$(new-folder)"
       },
       {
@@ -87,14 +92,14 @@
       },
       {
         "command": "customExplorer.unlinkFolder",
-        "title": "リンク解除（スナップショットに変換）",
+        "title": "リンク解除",
         "icon": "$(link-external)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "customExplorer.addGroup",
+          "command": "customExplorer.addGroupToRoot",
           "when": "view == custom-explorer-view",
           "group": "navigation@1"
         },

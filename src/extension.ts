@@ -105,6 +105,12 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider.addGroup(label, node);
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('customExplorer.addGroupToRoot', async () => {
+        const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
+        if (!label) return;
+        treeDataProvider.addGroup(label, undefined);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('customExplorer.createNewFolder', async (node?: ExplorerNode) => {
         treeDataProvider.addGroup(DEFAULT_FOLDER_NAME, node, vscode.TreeItemCollapsibleState.Collapsed);
     }));
