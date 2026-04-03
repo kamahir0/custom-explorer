@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.0.12",
+  "version": "0.1.0",
   "engines": {
     "vscode": "^1.100.0"
   },
