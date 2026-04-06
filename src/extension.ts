@@ -822,7 +822,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             type: 'linked-group',
             linkedPath: dirPath,
             children: [],
-            collapsibleState: vscode.TreeItemCollapsibleState.Expanded
+            collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
         };
 
         this.appendToParent(newNode, parent);
