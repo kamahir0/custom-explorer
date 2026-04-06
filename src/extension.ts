@@ -178,7 +178,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         if (!node) return undefined;
 
         if (node.type === 'file') {
-            return this.getDiagnosticDecoration(uri);
+            return this.getDiagnosticDecoration(uri) ?? new vscode.FileDecoration();
         } else {
             return this.getGroupDecoration(node);
         }
@@ -461,7 +461,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             if (element.type === 'linked-group') {
-                treeItem.iconPath = new vscode.ThemeIcon('link', new vscode.ThemeColor('editorInfo.foreground'));
+                treeItem.iconPath = vscode.ThemeIcon.Folder;
+                treeItem.description = '🔗';
             } else {
                 treeItem.iconPath = vscode.ThemeIcon.Folder;
             }
@@ -603,7 +604,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                             label: item.name,
                             type: 'group',
                             children: [],
-                            filePath: fullPath,
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
@@ -665,7 +665,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                             label: item.name,
                             type: 'group',
                             children: [],
-                            filePath: fullPath,
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
