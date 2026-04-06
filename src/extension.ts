@@ -458,6 +458,10 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 title: 'Open File',
                 arguments: [treeItem.resourceUri]
             };
+            if (!this.isChildOfLinkedGroup(element)) {
+                const parentDir = path.basename(path.dirname(element.filePath));
+                treeItem.description = parentDir ? `${parentDir}/` : undefined;
+            }
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
