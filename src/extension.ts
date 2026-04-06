@@ -460,11 +460,12 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             };
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
+            treeItem.iconPath = vscode.ThemeIcon.Folder;
             if (element.type === 'linked-group') {
-                treeItem.iconPath = vscode.ThemeIcon.Folder;
-                treeItem.description = '🔗';
-            } else {
-                treeItem.iconPath = vscode.ThemeIcon.Folder;
+                const parentDir = element.linkedPath
+                    ? path.basename(path.dirname(element.linkedPath))
+                    : undefined;
+                treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
         }
         return treeItem;
