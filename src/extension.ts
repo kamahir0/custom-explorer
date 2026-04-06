@@ -299,6 +299,20 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         return false;
     }
 
+    /**
+     * linked-groupノード自身、またはlinked-group配下のgroupノード（実ディレクトリ）かどうかを判定する。
+     * これらのノードはfsPathを持つため、チャット欄へのD&Dが可能。
+     */
+    private isDraggableFolder(node: ExplorerNode): boolean {
+        if (node.type === 'linked-group' && node.linkedPath) {
+            return true;
+        }
+        if (node.type === 'group' && node.filePath && this.isChildOfLinkedGroup(node)) {
+            return true;
+        }
+        return false;
+    }
+
     public findNodeByPath(targetPath: string): ExplorerNode | undefined {
         return this.pathIndex.get(targetPath);
     }
@@ -361,6 +375,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
+                }
+
+                // linked-groupはlinkedPathでもインデックスを張る
+                if (node.type === 'linked-group' && node.linkedPath) {
+                    this.uriToNodeMap.set(vscode.Uri.file(node.linkedPath).toString(), node);
                 }
 
                 if (this.isGroupLike(node)) {
@@ -452,6 +471,7 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         treeItem.id = element.id;
 
         if (element.type === 'file' && element.filePath) {
+            // --- fileノード: 従来通り ---
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = {
                 command: 'vscode.open',
@@ -462,16 +482,22 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 const parentDir = path.basename(path.dirname(element.filePath));
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
+        } else if (element.type === 'linked-group' && element.linkedPath) {
+            // --- linked-groupノード: linkedPathのファイルURIを使う (D&D対応) ---
+            treeItem.resourceUri = vscode.Uri.file(element.linkedPath);
+            treeItem.iconPath = vscode.ThemeIcon.Folder;
+            const parentDir = path.basename(path.dirname(element.linkedPath));
+            treeItem.description = parentDir ? `${parentDir}/` : undefined;
+        } else if (element.type === 'group' && element.filePath && this.isChildOfLinkedGroup(element)) {
+            // --- linked-group配下のgroupノード(サブディレクトリ): fsPathを使う (D&D対応) ---
+            treeItem.resourceUri = vscode.Uri.file(element.filePath);
+            treeItem.iconPath = vscode.ThemeIcon.Folder;
         } else {
+            // --- 通常のgroupノード: 独自URIを使う (D&D不可、従来通り) ---
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
-            if (element.type === 'linked-group') {
-                const parentDir = element.linkedPath
-                    ? path.basename(path.dirname(element.linkedPath))
-                    : undefined;
-                treeItem.description = parentDir ? `${parentDir}/` : undefined;
-            }
         }
+
         return treeItem;
     }
 
@@ -609,6 +635,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                             label: item.name,
                             type: 'group',
                             children: [],
+                            // D&Dを可能にするためfsPathを保持する
+                            filePath: fullPath,
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
@@ -842,6 +870,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         this.disposeWatcher(node.id);
         node.type = 'group';
         node.linkedPath = undefined;
+        // filePathも持っていた場合はクリアして通常groupと同じ扱いにする
+        node.filePath = undefined;
 
         this.saveAndRefresh();
     }
