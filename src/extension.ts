@@ -278,7 +278,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
-    public dragMimeTypes = [MIME_INTERNAL];
+    // +++ 'text/uri-list' を追加: linked-group / linked-group配下のgroupノードを外部へD&D可能にする
+    public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list'];
 
     constructor(private context: vscode.ExtensionContext) {
         this.loadData();
@@ -295,20 +296,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 return true;
             }
             current = this.getParent(current);
-        }
-        return false;
-    }
-
-    /**
-     * linked-groupノード自身、またはlinked-group配下のgroupノード（実ディレクトリ）かどうかを判定する。
-     * これらのノードはfsPathを持つため、チャット欄へのD&Dが可能。
-     */
-    private isDraggableFolder(node: ExplorerNode): boolean {
-        if (node.type === 'linked-group' && node.linkedPath) {
-            return true;
-        }
-        if (node.type === 'group' && node.filePath && this.isChildOfLinkedGroup(node)) {
-            return true;
         }
         return false;
     }
@@ -375,11 +362,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
-                }
-
-                // linked-groupはlinkedPathでもインデックスを張る
-                if (node.type === 'linked-group' && node.linkedPath) {
-                    this.uriToNodeMap.set(vscode.Uri.file(node.linkedPath).toString(), node);
                 }
 
                 if (this.isGroupLike(node)) {
@@ -471,7 +453,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         treeItem.id = element.id;
 
         if (element.type === 'file' && element.filePath) {
-            // --- fileノード: 従来通り ---
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = {
                 command: 'vscode.open',
@@ -482,22 +463,16 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                 const parentDir = path.basename(path.dirname(element.filePath));
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
-        } else if (element.type === 'linked-group' && element.linkedPath) {
-            // --- linked-groupノード: linkedPathのファイルURIを使う (D&D対応) ---
-            treeItem.resourceUri = vscode.Uri.file(element.linkedPath);
-            treeItem.iconPath = vscode.ThemeIcon.Folder;
-            const parentDir = path.basename(path.dirname(element.linkedPath));
-            treeItem.description = parentDir ? `${parentDir}/` : undefined;
-        } else if (element.type === 'group' && element.filePath && this.isChildOfLinkedGroup(element)) {
-            // --- linked-group配下のgroupノード(サブディレクトリ): fsPathを使う (D&D対応) ---
-            treeItem.resourceUri = vscode.Uri.file(element.filePath);
-            treeItem.iconPath = vscode.ThemeIcon.Folder;
         } else {
-            // --- 通常のgroupノード: 独自URIを使う (D&D不可、従来通り) ---
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
+            if (element.type === 'linked-group') {
+                const parentDir = element.linkedPath
+                    ? path.basename(path.dirname(element.linkedPath))
+                    : undefined;
+                treeItem.description = parentDir ? `${parentDir}/` : undefined;
+            }
         }
-
         return treeItem;
     }
 
@@ -527,6 +502,53 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
 
     public handleDrag(source: readonly ExplorerNode[], dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): void {
         dataTransfer.set(MIME_INTERNAL, new vscode.DataTransferItem(source));
+
+        // +++ linked-group または linked-group配下のgroupノードを外部へD&Dできるよう
+        // +++  実ファイルシステムパスを text/uri-list として追加する
+        const uris: string[] = [];
+        for (const node of source) {
+            const fsPath = this.resolveFsPathForDrag(node);
+            if (fsPath) {
+                uris.push(vscode.Uri.file(fsPath).toString());
+            }
+        }
+        if (uris.length > 0) {
+            dataTransfer.set('text/uri-list', new vscode.DataTransferItem(uris.join('\r\n')));
+        }
+    }
+
+    // +++ ドラッグ対象ノードのファイルシステム上の実パスを解決する
+    // +++   - linked-group            : linkedPath をそのまま返す
+    // +++   - linked-group配下のgroup : 先祖のlinked-groupのlinkedPathから相対パスを算出
+    // +++   - それ以外                : undefined (外部D&D不可)
+    private resolveFsPathForDrag(node: ExplorerNode): string | undefined {
+        if (node.type === 'linked-group' && node.linkedPath) {
+            return node.linkedPath;
+        }
+
+        if (node.type === 'group' && this.isChildOfLinkedGroup(node)) {
+            return this.resolveGroupFsPath(node);
+        }
+
+        return undefined;
+    }
+
+    // +++ linked-group配下のgroupノードの実パスを、先祖のlinked-groupを起点に解決する
+    private resolveGroupFsPath(node: ExplorerNode): string | undefined {
+        const segments: string[] = [node.label];
+        let current = this.getParent(node);
+
+        while (current) {
+            if (current.type === 'linked-group' && current.linkedPath) {
+                // セグメントを逆順にして linkedPath と結合
+                segments.reverse();
+                return path.join(current.linkedPath, ...segments);
+            }
+            segments.push(current.label);
+            current = this.getParent(current);
+        }
+
+        return undefined;
     }
 
     public async handleDrop(target: ExplorerNode | undefined, dataTransfer: vscode.DataTransfer, token: vscode.CancellationToken): Promise<void> {
@@ -535,6 +557,11 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         if (internalDrag) {
             const sources: ExplorerNode[] = internalDrag.value;
             this.moveNodes(sources, target);
+            return;
+        }
+
+        // +++ 外部(OS)からのD&Dは linked-group およびその配下へのドロップを禁止する
+        if (target && (target.type === 'linked-group' || this.isChildOfLinkedGroup(target))) {
             return;
         }
 
@@ -635,8 +662,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
                             label: item.name,
                             type: 'group',
                             children: [],
-                            // D&Dを可能にするためfsPathを保持する
-                            filePath: fullPath,
                             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed
                         };
                         parentNode.children = parentNode.children || [];
@@ -774,8 +799,8 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
             if (this.isChildOfLinkedGroup(source)) {
                 return false;
             }
-            // Cannot move into linked-group
-            if (target?.type === 'linked-group') {
+            // Cannot move into linked-group or any node inside linked-group
+            if (target && (target.type === 'linked-group' || this.isChildOfLinkedGroup(target))) {
                 return false;
             }
             if (source === target) return false;
@@ -870,8 +895,6 @@ class CustomTreeDataProvider implements vscode.TreeDataProvider<ExplorerNode>, v
         this.disposeWatcher(node.id);
         node.type = 'group';
         node.linkedPath = undefined;
-        // filePathも持っていた場合はクリアして通常groupと同じ扱いにする
-        node.filePath = undefined;
 
         this.saveAndRefresh();
     }
