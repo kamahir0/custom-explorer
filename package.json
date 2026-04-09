@@ -122,17 +122,17 @@
         },
         {
           "command": "customExplorer.expandRecursive",
-          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group || viewItem == linked-group-child)",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == folder-ref || viewItem == folder-ref-child-folder)",
           "group": "inline@2"
         },
         {
           "command": "customExplorer.collapseRecursive",
-          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group || viewItem == linked-group-child)",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == folder-ref || viewItem == folder-ref-child-folder)",
           "group": "inline@3"
         },
         {
           "command": "customExplorer.removeEntry",
-          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file || viewItem == linked-group)",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file-ref || viewItem == folder-ref)",
           "group": "inline@4"
         },
         {
@@ -147,12 +147,12 @@
         },
         {
           "command": "customExplorer.unlinkFolder",
-          "when": "view == custom-explorer-view && viewItem == linked-group",
+          "when": "view == custom-explorer-view && viewItem == folder-ref",
           "group": "1_modification@3"
         },
         {
           "command": "customExplorer.removeEntry",
-          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file || viewItem == linked-group)",
+          "when": "view == custom-explorer-view && (viewItem == group || viewItem == file-ref || viewItem == folder-ref)",
           "group": "2_destructive@1"
         }
       ]

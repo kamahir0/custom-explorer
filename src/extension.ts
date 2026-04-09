@@ -42,7 +42,7 @@ const GROUP_SEVERITY_DECORATION = {
 interface StoredNode {
     id: string;
     label: string;
-    type: 'group' | 'file' | 'linked-group';
+    type: 'group' | 'file-ref' | 'folder-ref';
     children?: StoredNode[];
     filePath?: string;
     linkedPath?: string;
@@ -128,7 +128,7 @@ export function activate(context: vscode.ExtensionContext) {
         }],
 
         ['customExplorer.renameEntry', async (node: ExplorerNode) => {
-            // linked-group などの名前変更をブロックし、group のみに限定する
+            // folder-ref などの名前変更をブロックし、group のみに限定する
             if (node.type !== 'group') return;
 
             const newName = await vscode.window.showInputBox({
@@ -175,7 +175,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         const node = this.treeDataProvider.getNodeByUri(uri);
         if (!node) return undefined;
 
-        return node.type === 'file'
+        return node.type === 'file-ref'
             ? (this.getDiagnosticDecoration(uri) ?? new vscode.FileDecoration())
             : this.getGroupDecoration(node);
     }
@@ -202,7 +202,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
     private traverseDiagnostics(nodes: ExplorerNode[]): 'error' | 'warning' | 'none' {
         let hasWarning = false;
         for (const child of nodes) {
-            if (child.type === 'file' && child.filePath) {
+            if (child.type === 'file-ref' && child.filePath) {
                 const diags = vscode.languages.getDiagnostics(vscode.Uri.file(child.filePath));
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) return 'error';
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Warning)) hasWarning = true;
@@ -216,7 +216,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
     }
 
     private isGroupLike(node: ExplorerNode): boolean {
-        return node.type === 'group' || node.type === 'linked-group';
+        return node.type === 'group' || node.type === 'folder-ref';
     }
 
     public fireDidChangeFileDecorations(uris: ReadonlyArray<vscode.Uri>) {
@@ -257,7 +257,7 @@ class CustomTreeDataProvider implements
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
-    // 'text/uri-list' を追加: linked-group / linked-group配下のgroupノードを外部へD&D可能にする
+    // 'text/uri-list' を追加: folder-ref / folder-ref配下のgroupノードを外部へD&D可能にする
     public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list'];
 
     constructor(private context: vscode.ExtensionContext) {
@@ -267,13 +267,13 @@ class CustomTreeDataProvider implements
     // --- ノード判定ヘルパー ---
 
     private isGroupLike(node: ExplorerNode): boolean {
-        return node.type === 'group' || node.type === 'linked-group';
+        return node.type === 'group' || node.type === 'folder-ref';
     }
 
     private isChildOfLinkedGroup(node: ExplorerNode): boolean {
         let current = this.getParent(node);
         while (current) {
-            if (current.type === 'linked-group') return true;
+            if (current.type === 'folder-ref') return true;
             current = this.getParent(current);
         }
         return false;
@@ -282,7 +282,7 @@ class CustomTreeDataProvider implements
     // --- ノード生成ファクトリ ---
 
     private createFileNode(label: string, filePath: string): ExplorerNode {
-        return { id: this.generateId(), label, type: 'file', filePath };
+        return { id: this.generateId(), label, type: 'file-ref', filePath };
     }
 
     private createGroupNode(
@@ -296,7 +296,7 @@ class CustomTreeDataProvider implements
         return {
             id: this.generateId(),
             label,
-            type: 'linked-group',
+            type: 'folder-ref',
             linkedPath,
             children: [],
             collapsibleState: vscode.TreeItemCollapsibleState.Collapsed,
@@ -325,7 +325,7 @@ class CustomTreeDataProvider implements
     // --- ファイルシステムウォッチャー ---
 
     private setupWatcher(node: ExplorerNode): void {
-        if (node.type !== 'linked-group' || !node.linkedPath) return;
+        if (node.type !== 'folder-ref' || !node.linkedPath) return;
         try {
             const pattern = new vscode.RelativePattern(vscode.Uri.file(node.linkedPath), '**/*');
             const watcher = vscode.workspace.createFileSystemWatcher(pattern);
@@ -388,7 +388,7 @@ class CustomTreeDataProvider implements
             const newPath = file.newUri.fsPath;
             const targetNode = this.pathIndex.get(oldPath);
 
-            // linked-group配下のノードはウォッチャーが処理するためスキップ
+            // folder-ref配下のノードはウォッチャーが処理するためスキップ
             if (!targetNode || this.isChildOfLinkedGroup(targetNode)) continue;
 
             targetNode.label = path.basename(newPath);
@@ -413,7 +413,7 @@ class CustomTreeDataProvider implements
         let isChanged = false;
         for (const uri of files) {
             const node = this.pathIndex.get(uri.fsPath);
-            // linked-group配下のノードはウォッチャーが処理するためスキップ
+            // folder-ref配下のノードはウォッチャーが処理するためスキップ
             if (node && !this.isChildOfLinkedGroup(node)) {
                 this.removeNode(node, false);
                 isChanged = true;
@@ -435,7 +435,7 @@ class CustomTreeDataProvider implements
         treeItem.id = element.id;
         treeItem.contextValue = this.resolveContextValue(element);
 
-        if (element.type === 'file' && element.filePath) {
+        if (element.type === 'file-ref' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = { command: 'vscode.open', title: 'Open File', arguments: [treeItem.resourceUri] };
             if (!this.isChildOfLinkedGroup(element)) {
@@ -445,7 +445,7 @@ class CustomTreeDataProvider implements
         } else {
             treeItem.resourceUri = this.getCustomExplorerUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
-            if (element.type === 'linked-group' && element.linkedPath) {
+            if (element.type === 'folder-ref' && element.linkedPath) {
                 const parentDir = path.basename(path.dirname(element.linkedPath));
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
@@ -455,11 +455,11 @@ class CustomTreeDataProvider implements
     }
 
     private resolveContextValue(element: ExplorerNode): string {
-        if (element.type === 'linked-group') return 'linked-group';
+        if (element.type === 'folder-ref') return 'folder-ref';
         if (this.isChildOfLinkedGroup(element)) {
-            return element.type === 'file' ? 'linked-group-child-file' : 'linked-group-child';
+            return element.type === 'file-ref' ? 'folder-ref-child-file' : 'folder-ref-child-folder';
         }
-        return element.type;
+        return element.type; // 'group' or 'file-ref'
     }
 
     getChildren(element?: ExplorerNode): ExplorerNode[] {
@@ -487,7 +487,7 @@ class CustomTreeDataProvider implements
     public handleDrag(source: readonly ExplorerNode[], dataTransfer: vscode.DataTransfer, _token: vscode.CancellationToken): void {
         dataTransfer.set(MIME_INTERNAL, new vscode.DataTransferItem(source));
 
-        // linked-group または linked-group配下のgroupノードを外部へD&DできるようURIを追加
+        // folder-ref または folder-ref配下のgroupノードを外部へD&DできるようURIを追加
         const uris = source
             .map(node => this.resolveFsPathForDrag(node))
             .filter((p): p is string => p !== undefined)
@@ -499,22 +499,22 @@ class CustomTreeDataProvider implements
     }
 
     // ドラッグ対象ノードのファイルシステム上の実パスを解決する
-    //   - linked-group            : linkedPath をそのまま返す
-    //   - linked-group配下のgroup : 先祖のlinked-groupのlinkedPathから相対パスを算出
-    //   - それ以外                : undefined（外部D&D不可）
+    //   - folder-ref            : linkedPath をそのまま返す
+    //   - folder-ref配下のgroup : 先祖のfolder-refのlinkedPathから相対パスを算出
+    //   - それ以外              : undefined（外部D&D不可）
     private resolveFsPathForDrag(node: ExplorerNode): string | undefined {
-        if (node.type === 'linked-group' && node.linkedPath) return node.linkedPath;
+        if (node.type === 'folder-ref' && node.linkedPath) return node.linkedPath;
         if (node.type === 'group' && this.isChildOfLinkedGroup(node)) return this.resolveGroupFsPath(node);
         return undefined;
     }
 
-    // linked-group配下のgroupノードの実パスを、先祖のlinked-groupを起点に解決する
+    // folder-ref配下のgroupノードの実パスを、先祖のfolder-refを起点に解決する
     private resolveGroupFsPath(node: ExplorerNode): string | undefined {
         const segments: string[] = [node.label];
         let current = this.getParent(node);
 
         while (current) {
-            if (current.type === 'linked-group' && current.linkedPath) {
+            if (current.type === 'folder-ref' && current.linkedPath) {
                 return path.join(current.linkedPath, ...segments.reverse());
             }
             segments.push(current.label);
@@ -532,8 +532,8 @@ class CustomTreeDataProvider implements
             return;
         }
 
-        // 外部(OS)からのD&Dは linked-group およびその配下へのドロップを禁止する
-        if (target && (target.type === 'linked-group' || this.isChildOfLinkedGroup(target))) return;
+        // 外部(OS)からのD&Dは folder-ref およびその配下へのドロップを禁止する
+        if (target && (target.type === 'folder-ref' || this.isChildOfLinkedGroup(target))) return;
 
         const uriListItem = dataTransfer.get('text/uri-list');
         const plainTextItem = dataTransfer.get('text/plain');
@@ -592,7 +592,7 @@ class CustomTreeDataProvider implements
     }
 
     // ディレクトリを再帰的にスキャンしてノードを生成する共通処理
-    // skipSymlinks: linked-group同期時のみ true（シンボリックリンクをスキップ）
+    // skipSymlinks: folder-ref同期時のみ true（シンボリックリンクをスキップ）
     private scanDirectory(currentPath: string, parentNode: ExplorerNode, options: { skipSymlinks: boolean }): void {
         try {
             const items = fs.readdirSync(currentPath, { withFileTypes: true });
@@ -617,7 +617,7 @@ class CustomTreeDataProvider implements
     }
 
     private syncLinkedFolder(node: ExplorerNode): void {
-        if (node.type !== 'linked-group' || !node.linkedPath) return;
+        if (node.type !== 'folder-ref' || !node.linkedPath) return;
 
         if (!fs.existsSync(node.linkedPath)) {
             node.children = [];
@@ -671,7 +671,7 @@ class CustomTreeDataProvider implements
     }
 
     public unlinkFolder(node: ExplorerNode): void {
-        if (node.type !== 'linked-group') return;
+        if (node.type !== 'folder-ref') return;
         this.disposeWatcher(node.id);
         node.type = 'group';
         node.linkedPath = undefined;
@@ -690,7 +690,7 @@ class CustomTreeDataProvider implements
     public removeNode(node: ExplorerNode, shouldSave = true): boolean {
         if (!node) return false;
         if (this.isChildOfLinkedGroup(node)) return false;
-        if (node.type === 'linked-group') this.disposeWatcher(node.id);
+        if (node.type === 'folder-ref') this.disposeWatcher(node.id);
 
         const removeRecursive = (nodes: ExplorerNode[]): boolean => {
             const index = nodes.findIndex(n => n.id === node.id);
@@ -712,7 +712,7 @@ class CustomTreeDataProvider implements
 
         const isValidMove = (source: ExplorerNode, target?: ExplorerNode): boolean => {
             if (this.isChildOfLinkedGroup(source)) return false;
-            if (target && (target.type === 'linked-group' || this.isChildOfLinkedGroup(target))) return false;
+            if (target && (target.type === 'folder-ref' || this.isChildOfLinkedGroup(target))) return false;
             if (source === target) return false;
             if (!target) return true;
             return !isDescendant(source, target);
@@ -798,14 +798,24 @@ class CustomTreeDataProvider implements
         });
     }
 
+    private migrateData(nodes: ExplorerNode[]): void {
+        for (const node of nodes) {
+            if ((node.type as string) === 'file') node.type = 'file-ref';
+            if ((node.type as string) === 'linked-group') node.type = 'folder-ref';
+            if (node.children) this.migrateData(node.children);
+        }
+    }
+
     private loadData() {
         this.data = this.context.workspaceState.get<ExplorerNode[]>(STORAGE_KEY) || [];
+        this.migrateData(this.data);
+        this.context.workspaceState.update(STORAGE_KEY, this.data);
         this.rebuildIndex();
         this.updateContextKey();
 
         const restoreWatchers = (nodes: ExplorerNode[]) => {
             for (const node of nodes) {
-                if (node.type === 'linked-group') {
+                if (node.type === 'folder-ref') {
                     this.syncLinkedFolder(node);
                     this.setupWatcher(node);
                 }
