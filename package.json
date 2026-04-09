@@ -35,24 +35,24 @@
     "viewsWelcome": [
       {
         "view": "custom-explorer-view",
-        "contents": "まだ項目がありません。\n[フォルダを追加](command:customExplorer.createNewFolder)",
+        "contents": "まだ項目がありません。\n[グループを追加](command:customExplorer.createNewFolder)",
         "when": "customExplorer.isEmpty"
       }
     ],
     "commands": [
       {
         "command": "customExplorer.addGroup",
-        "title": "新しいフォルダー...",
+        "title": "新しいグループ...",
         "icon": "$(new-folder)"
       },
       {
         "command": "customExplorer.addGroupToRoot",
-        "title": "新しいフォルダー",
+        "title": "新しいグループ",
         "icon": "$(new-folder)"
       },
       {
         "command": "customExplorer.createNewFolder",
-        "title": "フォルダを追加",
+        "title": "グループを追加",
         "icon": "$(new-folder)"
       },
       {

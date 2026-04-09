@@ -9,7 +9,7 @@ const STORAGE_KEY = 'customExplorerData';
 const CONTEXT_KEY_IS_EMPTY = 'customExplorer.isEmpty';
 const MIME_INTERNAL = 'application/vnd.code.tree.customExplorer';
 const URI_SCHEME = 'custom-explorer';
-const DEFAULT_FOLDER_NAME = 'New Folder';
+const DEFAULT_FOLDER_NAME = 'New Group';
 
 // 診断レベルに対応するデコレーション定義（起動時に1度だけ生成）
 const SEVERITY_DECORATION = {
@@ -112,13 +112,13 @@ export function activate(context: vscode.ExtensionContext) {
         }],
 
         ['customExplorer.addGroup', async (node?: ExplorerNode) => {
-            const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
+            const label = await vscode.window.showInputBox({ prompt: 'グループ名を入力してください' });
             if (!label) return;
             treeDataProvider.addGroup(label, node);
         }],
 
         ['customExplorer.addGroupToRoot', async () => {
-            const label = await vscode.window.showInputBox({ prompt: 'フォルダ名を入力してください' });
+            const label = await vscode.window.showInputBox({ prompt: 'グループ名を入力してください' });
             if (!label) return;
             treeDataProvider.addGroup(label, undefined);
         }],
