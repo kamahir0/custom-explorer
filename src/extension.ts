@@ -270,7 +270,7 @@ class CustomTreeDataProvider implements
         return node.type === 'group' || node.type === 'folder-ref';
     }
 
-    private isChildOfLinkedGroup(node: ExplorerNode): boolean {
+    private isChildOfFolderRef(node: ExplorerNode): boolean {
         let current = this.getParent(node);
         while (current) {
             if (current.type === 'folder-ref') return true;
@@ -292,7 +292,7 @@ class CustomTreeDataProvider implements
         return { id: this.generateId(), label, type: 'group', children: [], collapsibleState };
     }
 
-    private createLinkedGroupNode(label: string, linkedPath: string): ExplorerNode {
+    private createFolderRefNode(label: string, linkedPath: string): ExplorerNode {
         return {
             id: this.generateId(),
             label,
@@ -329,7 +329,7 @@ class CustomTreeDataProvider implements
         try {
             const pattern = new vscode.RelativePattern(vscode.Uri.file(node.linkedPath), '**/*');
             const watcher = vscode.workspace.createFileSystemWatcher(pattern);
-            const sync = () => this.syncLinkedFolder(node);
+            const sync = () => this.syncFolderRef(node);
             watcher.onDidCreate(sync);
             watcher.onDidDelete(sync);
             watcher.onDidChange(sync);
@@ -389,7 +389,7 @@ class CustomTreeDataProvider implements
             const targetNode = this.pathIndex.get(oldPath);
 
             // folder-ref配下のノードはウォッチャーが処理するためスキップ
-            if (!targetNode || this.isChildOfLinkedGroup(targetNode)) continue;
+            if (!targetNode || this.isChildOfFolderRef(targetNode)) continue;
 
             targetNode.label = path.basename(newPath);
             targetNode.filePath = newPath;
@@ -414,7 +414,7 @@ class CustomTreeDataProvider implements
         for (const uri of files) {
             const node = this.pathIndex.get(uri.fsPath);
             // folder-ref配下のノードはウォッチャーが処理するためスキップ
-            if (node && !this.isChildOfLinkedGroup(node)) {
+            if (node && !this.isChildOfFolderRef(node)) {
                 this.removeNode(node, false);
                 isChanged = true;
             }
@@ -438,7 +438,7 @@ class CustomTreeDataProvider implements
         if (element.type === 'file-ref' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = { command: 'vscode.open', title: 'Open File', arguments: [treeItem.resourceUri] };
-            if (!this.isChildOfLinkedGroup(element)) {
+            if (!this.isChildOfFolderRef(element)) {
                 const parentDir = path.basename(path.dirname(element.filePath));
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
@@ -456,7 +456,7 @@ class CustomTreeDataProvider implements
 
     private resolveContextValue(element: ExplorerNode): string {
         if (element.type === 'folder-ref') return 'folder-ref';
-        if (this.isChildOfLinkedGroup(element)) {
+        if (this.isChildOfFolderRef(element)) {
             return element.type === 'file-ref' ? 'folder-ref-child-file' : 'folder-ref-child-folder';
         }
         return element.type; // 'group' or 'file-ref'
@@ -504,7 +504,7 @@ class CustomTreeDataProvider implements
     //   - それ以外              : undefined（外部D&D不可）
     private resolveFsPathForDrag(node: ExplorerNode): string | undefined {
         if (node.type === 'folder-ref' && node.linkedPath) return node.linkedPath;
-        if (node.type === 'group' && this.isChildOfLinkedGroup(node)) return this.resolveGroupFsPath(node);
+        if (node.type === 'group' && this.isChildOfFolderRef(node)) return this.resolveGroupFsPath(node);
         return undefined;
     }
 
@@ -533,7 +533,7 @@ class CustomTreeDataProvider implements
         }
 
         // 外部(OS)からのD&Dは folder-ref およびその配下へのドロップを禁止する
-        if (target && (target.type === 'folder-ref' || this.isChildOfLinkedGroup(target))) return;
+        if (target && (target.type === 'folder-ref' || this.isChildOfFolderRef(target))) return;
 
         const uriListItem = dataTransfer.get('text/uri-list');
         const plainTextItem = dataTransfer.get('text/plain');
@@ -546,7 +546,7 @@ class CustomTreeDataProvider implements
         const paths = this.resolveDroppedPaths(uriString);
         for (const fsPath of paths) {
             if (fs.statSync(fsPath).isDirectory()) {
-                this.addLinkedFolder(fsPath, target);
+                this.addFolderRef(fsPath, target);
             } else {
                 this.addFile(fsPath, target);
             }
@@ -616,7 +616,7 @@ class CustomTreeDataProvider implements
         }
     }
 
-    private syncLinkedFolder(node: ExplorerNode): void {
+    private syncFolderRef(node: ExplorerNode): void {
         if (node.type !== 'folder-ref' || !node.linkedPath) return;
 
         if (!fs.existsSync(node.linkedPath)) {
@@ -660,13 +660,13 @@ class CustomTreeDataProvider implements
         this.saveAndRefresh();
     }
 
-    public addLinkedFolder(dirPath: string, parent?: ExplorerNode) {
+    public addFolderRef(dirPath: string, parent?: ExplorerNode) {
         const dirName = path.basename(dirPath);
         if (this.shouldExclude(dirName)) return;
 
-        const newNode = this.createLinkedGroupNode(dirName, dirPath);
+        const newNode = this.createFolderRefNode(dirName, dirPath);
         this.appendToParent(newNode, parent);
-        this.syncLinkedFolder(newNode);
+        this.syncFolderRef(newNode);
         this.setupWatcher(newNode);
     }
 
@@ -689,7 +689,7 @@ class CustomTreeDataProvider implements
 
     public removeNode(node: ExplorerNode, shouldSave = true): boolean {
         if (!node) return false;
-        if (this.isChildOfLinkedGroup(node)) return false;
+        if (this.isChildOfFolderRef(node)) return false;
         if (node.type === 'folder-ref') this.disposeWatcher(node.id);
 
         const removeRecursive = (nodes: ExplorerNode[]): boolean => {
@@ -711,8 +711,8 @@ class CustomTreeDataProvider implements
             parent.children?.some(child => child === potentialChild || isDescendant(child, potentialChild)) ?? false;
 
         const isValidMove = (source: ExplorerNode, target?: ExplorerNode): boolean => {
-            if (this.isChildOfLinkedGroup(source)) return false;
-            if (target && (target.type === 'folder-ref' || this.isChildOfLinkedGroup(target))) return false;
+            if (this.isChildOfFolderRef(source)) return false;
+            if (target && (target.type === 'folder-ref' || this.isChildOfFolderRef(target))) return false;
             if (source === target) return false;
             if (!target) return true;
             return !isDescendant(source, target);
@@ -816,7 +816,7 @@ class CustomTreeDataProvider implements
         const restoreWatchers = (nodes: ExplorerNode[]) => {
             for (const node of nodes) {
                 if (node.type === 'folder-ref') {
-                    this.syncLinkedFolder(node);
+                    this.syncFolderRef(node);
                     this.setupWatcher(node);
                 }
                 if (node.children) restoreWatchers(node.children);
