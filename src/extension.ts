@@ -152,7 +152,7 @@ export function activate(context: vscode.ExtensionContext) {
         ['customExplorer.expandRecursive', (node: ExplorerNode) => treeDataProvider.expandRecursive(node)],
         ['customExplorer.collapseAll', () => treeDataProvider.collapseRecursive(undefined)],
         ['customExplorer.expandAll', () => treeDataProvider.expandRecursive(undefined)],
-        ['customExplorer.unlinkFolder', (node: ExplorerNode) => treeDataProvider.unlinkFolder(node)],
+        ['customExplorer.convertToGroup', (node: ExplorerNode) => treeDataProvider.convertToGroup(node)],
     ];
 
     context.subscriptions.push(
@@ -670,7 +670,7 @@ class CustomTreeDataProvider implements
         this.setupWatcher(newNode);
     }
 
-    public unlinkFolder(node: ExplorerNode): void {
+    public convertToGroup(node: ExplorerNode): void {
         if (node.type !== 'folder-ref') return;
         this.disposeWatcher(node.id);
         node.type = 'group';
