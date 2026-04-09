@@ -128,6 +128,9 @@ export function activate(context: vscode.ExtensionContext) {
         }],
 
         ['customExplorer.renameEntry', async (node: ExplorerNode) => {
+            // linked-group などの名前変更をブロックし、group のみに限定する
+            if (node.type !== 'group') return;
+
             const newName = await vscode.window.showInputBox({
                 prompt: '新しい名前を入力してください',
                 value: node.label,

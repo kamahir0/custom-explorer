@@ -142,7 +142,7 @@
         },
         {
           "command": "customExplorer.renameEntry",
-          "when": "view == custom-explorer-view && (viewItem == group || viewItem == linked-group)",
+          "when": "view == custom-explorer-view && viewItem == group",
           "group": "1_modification@2"
         },
         {
