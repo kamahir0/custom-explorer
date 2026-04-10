@@ -9,9 +9,10 @@ const STORAGE_KEY = 'customExplorerData';
 const CONTEXT_KEY_IS_EMPTY = 'customExplorer.isEmpty';
 const MIME_INTERNAL = 'application/vnd.code.tree.customExplorer';
 const URI_SCHEME = 'custom-explorer';
-const DEFAULT_FOLDER_NAME = 'New Group';
+const DEFAULT_GROUP_NAME = 'New Group';
 
 // 診断レベルに対応するデコレーション定義（起動時に1度だけ生成）
+// SEVERITY_DECORATION: file-ref 自身の診断バッジ
 const SEVERITY_DECORATION = {
     error: {
         badge: '●',
@@ -25,6 +26,7 @@ const SEVERITY_DECORATION = {
     },
 } as const;
 
+// GROUP_SEVERITY_DECORATION: group / folder-ref が子孫に持つ診断の集約バッジ
 const GROUP_SEVERITY_DECORATION = {
     error: {
         badge: '●',
@@ -83,7 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
     const eventSubscriptions = [
         vscode.window.onDidChangeActiveTextEditor(editor => syncTreeSelection(editor)),
         vscode.window.registerFileDecorationProvider(decorationProvider),
-        vscode.languages.onDidChangeDiagnostics(e => decorationProvider.fireDidChangeFileDecorations(e.uris)),
+        vscode.languages.onDidChangeDiagnostics(e => decorationProvider.handleDiagnosticsChange(e.uris)),
         vscode.workspace.onDidRenameFiles(e => treeDataProvider.handleFileRename(e.files)),
         vscode.workspace.onDidDeleteFiles(e => treeDataProvider.handleFileDelete(e.files)),
         vscode.workspace.onDidChangeConfiguration(e => {
@@ -128,7 +130,7 @@ export function activate(context: vscode.ExtensionContext) {
         }],
 
         ['customExplorer.createNewFolder', (node?: ExplorerNode) => {
-            treeDataProvider.addGroup(DEFAULT_FOLDER_NAME, node, vscode.TreeItemCollapsibleState.Collapsed);
+            treeDataProvider.addGroup(DEFAULT_GROUP_NAME, node, vscode.TreeItemCollapsibleState.Collapsed);
         }],
 
         ['customExplorer.renameEntry', async (node: ExplorerNode) => {
@@ -223,7 +225,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         return node.type === 'group' || node.type === 'folder-ref';
     }
 
-    public fireDidChangeFileDecorations(uris: ReadonlyArray<vscode.Uri>) {
+    public handleDiagnosticsChange(uris: ReadonlyArray<vscode.Uri>) {
         const urisToUpdate = new Set<string>();
 
         for (const uri of uris) {
@@ -258,7 +260,6 @@ class CustomTreeDataProvider implements
     private data: ExplorerNode[] = [];
     private pathIndex: Map<string, ExplorerNode> = new Map();
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
-    private parentMap: Map<ExplorerNode, ExplorerNode> = new Map();
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
@@ -276,10 +277,10 @@ class CustomTreeDataProvider implements
     }
 
     private isChildOfFolderRef(node: ExplorerNode): boolean {
-        let current = this.parentMap.get(node);
+        let current = this.getParent(node);
         while (current) {
             if (current.type === 'folder-ref') return true;
-            current = this.parentMap.get(current);
+            current = this.getParent(current);
         }
         return false;
     }
@@ -322,7 +323,7 @@ class CustomTreeDataProvider implements
         return vscode.Uri.parse(`${URI_SCHEME}://group/${node.id}`);
     }
 
-    public getCustomExplorerUri(node: ExplorerNode): vscode.Uri {
+    public getTreePathUri(node: ExplorerNode): vscode.Uri {
         const treePath = node.cachedTreePath || ('/' + node.label);
         return vscode.Uri.parse(`${URI_SCHEME}://tree${treePath}`);
     }
@@ -361,13 +362,10 @@ class CustomTreeDataProvider implements
     private rebuildIndex() {
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
-        this.parentMap.clear();
 
-        const traverse = (nodes: ExplorerNode[], parentPath = '', parent?: ExplorerNode) => {
+        const traverse = (nodes: ExplorerNode[], parentPath = '') => {
             for (const node of nodes) {
                 node.cachedTreePath = `${parentPath}/${node.label}`;
-
-                if (parent) this.parentMap.set(node, parent);
 
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
@@ -378,9 +376,9 @@ class CustomTreeDataProvider implements
                     this.uriToNodeMap.set(this.getGroupUri(node).toString(), node);
                 }
 
-                this.uriToNodeMap.set(this.getCustomExplorerUri(node).toString(), node);
+                this.uriToNodeMap.set(this.getTreePathUri(node).toString(), node);
 
-                if (node.children) traverse(node.children, node.cachedTreePath, node);
+                if (node.children) traverse(node.children, node.cachedTreePath);
             }
         };
         traverse(this.data);
@@ -451,7 +449,7 @@ class CustomTreeDataProvider implements
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
         } else {
-            treeItem.resourceUri = this.getCustomExplorerUri(element);
+            treeItem.resourceUri = this.getTreePathUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
             if (element.type === 'folder-ref' && element.linkedPath) {
                 const parentDir = path.basename(path.dirname(element.linkedPath));
@@ -476,7 +474,18 @@ class CustomTreeDataProvider implements
     }
 
     getParent(element: ExplorerNode): ExplorerNode | undefined {
-        return this.parentMap.get(element);
+        return this.findParent(this.data, element);
+    }
+
+    private findParent(nodes: ExplorerNode[], target: ExplorerNode): ExplorerNode | undefined {
+        for (const node of nodes) {
+            if (node.children?.includes(target)) return node;
+            if (node.children) {
+                const found = this.findParent(node.children, target);
+                if (found) return found;
+            }
+        }
+        return undefined;
     }
 
     // --- ドラッグ＆ドロップ ---
@@ -588,8 +597,8 @@ class CustomTreeDataProvider implements
         this._onDidChangeTreeData.fire();
     }
 
-    // ディレクトリを再帰的にスキャンしてノードを生成する共通処理
-    // skipSymlinks: folder-ref同期時のみ true（シンボリックリンクをスキップ）
+    // importDirectory と syncFolderRef から共用するディレクトリ再帰スキャン処理
+    // skipSymlinks: folder-ref の同期時のみ true（シンボリックリンクをスキップ）
     private scanDirectory(currentPath: string, parentNode: ExplorerNode, options: { skipSymlinks: boolean }): void {
         try {
             const items = fs.readdirSync(currentPath, { withFileTypes: true });
@@ -748,8 +757,6 @@ class CustomTreeDataProvider implements
     private applyCollapsibleState(node: ExplorerNode | undefined, state: vscode.TreeItemCollapsibleState) {
         const targets = node ? [node] : this.data;
         targets.forEach(t => this.setCollapsibleStateRecursive(t, state));
-        // setCollapsibleStateRecursive でIDが再生成されるため、インデックスを再構築する
-        this.rebuildIndex();
         this.context.workspaceState.update(STORAGE_KEY, this.data);
 
         if (node) {
@@ -780,7 +787,7 @@ class CustomTreeDataProvider implements
     }
 
     private saveData() {
-        this.sortNodesRecursive(this.data);
+        this.sortNodes(this.data);
         this.rebuildIndex();
         this.context.workspaceState.update(STORAGE_KEY, this.data);
     }
@@ -806,7 +813,7 @@ class CustomTreeDataProvider implements
      *   ファイル優先系  : file-ref(0) > folder-ref(1) > group(2)
      *   mixed          : 型による優先度なし（名前のみで比較）
      */
-    private sortNodesRecursive(nodes: ExplorerNode[]): void {
+    private sortNodes(nodes: ExplorerNode[]): void {
         const explorerConfig = vscode.workspace.getConfiguration('explorer');
         const sortOrder = explorerConfig.get<string>('sortOrder') ?? 'default';
         const lexOption = explorerConfig.get<string>('sortOrderLexicographicOptions') ?? 'default';
@@ -814,16 +821,16 @@ class CustomTreeDataProvider implements
         const collator = this.buildCollator(lexOption);
         const compareFn = this.buildCompareFn(sortOrder, collator);
 
-        this.sortNodesRecursiveWith(nodes, compareFn);
+        this.sortNodesRecursive(nodes, compareFn);
     }
 
-    private sortNodesRecursiveWith(
+    private sortNodesRecursive(
         nodes: ExplorerNode[],
         compareFn: (a: ExplorerNode, b: ExplorerNode) => number
     ): void {
         nodes.sort(compareFn);
         nodes.forEach(node => {
-            if (node.children?.length) this.sortNodesRecursiveWith(node.children, compareFn);
+            if (node.children?.length) this.sortNodesRecursive(node.children, compareFn);
         });
     }
 
@@ -903,8 +910,9 @@ class CustomTreeDataProvider implements
                     return collator.compare(a.label, b.label);
                 };
 
+            // foldersNestsFiles: ツリー構造変更を伴うため非対応。default と同等にフォールバック
+            // fallthrough
             case 'foldersNestsFiles':
-            // ツリー構造変更を伴うため非対応: defaultと同等にフォールバック
             case 'default':
             default:
                 // フォルダ優先: group(0) > folder-ref(1) > file-ref(2)
