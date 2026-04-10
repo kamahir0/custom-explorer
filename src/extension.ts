@@ -281,11 +281,9 @@ class CustomTreeDataProvider implements
 
     /**
      * 【修正】files.exclude 設定のキャッシュ。
-     * マルチルートワークスペース対応のため、ワークスペースフォルダーURIをキーにした Map で保持。
-     * フォルダー外ファイルは空文字キーで管理。
      * onDidChangeConfiguration で invalidateExcludeCache() を呼んでリセットする。
      */
-    private excludePatternsCache: Map<string, { [key: string]: boolean }> = new Map();
+    private excludePatterns: { [key: string]: boolean } | null = null;
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
     // 'text/uri-list' を追加: folder-ref / folder-ref配下のgroupノードを外部へD&D可能にする
@@ -624,28 +622,18 @@ class CustomTreeDataProvider implements
      * キャッシュは invalidateExcludeCache() で破棄する。
      */
     public invalidateExcludeCache(): void {
-        this.excludePatternsCache.clear();
+        this.excludePatterns = null;
     }
 
-    /**
-     * ワークスペースフォルダー単位でキャッシュ。
-     * マルチルートワークスペースで各フォルダーが独自の files.exclude を持つケースに対応。
-     */
-    private getExcludePatterns(filePath: string): { [key: string]: boolean } {
-        const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
-        const cacheKey = folder?.uri.toString() ?? '';
-
-        const cached = this.excludePatternsCache.get(cacheKey);
-        if (cached !== undefined) return cached;
-
-        const config = vscode.workspace.getConfiguration('files', folder?.uri);
-        const patterns = config.get<{ [key: string]: boolean }>('exclude') || {};
-        this.excludePatternsCache.set(cacheKey, patterns);
-        return patterns;
+    private getExcludePatterns(): { [key: string]: boolean } {
+        if (this.excludePatterns !== null) return this.excludePatterns;
+        const config = vscode.workspace.getConfiguration('files');
+        this.excludePatterns = config.get<{ [key: string]: boolean }>('exclude') || {};
+        return this.excludePatterns;
     }
 
     private shouldExclude(filePath: string): boolean {
-        const excludes = this.getExcludePatterns(filePath);
+        const excludes = this.getExcludePatterns();
 
         const relativePath = vscode.workspace.asRelativePath(filePath, false).split(path.sep).join('/');
         const fileName = path.basename(filePath);
