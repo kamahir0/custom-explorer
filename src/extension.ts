@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 import * as fs from 'fs';
-import { randomUUID } from 'crypto';
 
 // --- Constants ---
 const VIEW_ID = 'custom-explorer-view';
@@ -53,22 +52,6 @@ interface StoredNode {
 interface ExplorerNode extends StoredNode {
     children?: ExplorerNode[];
     cachedTreePath?: string;
-    /** rebuildIndex 時に付与: folder-ref の子孫かどうか */
-    isUnderFolderRef?: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// モジュールスコープのユーティリティ（重複定義を排除）
-// ---------------------------------------------------------------------------
-
-/** group / folder-ref のどちらかであれば true */
-function isGroupLike(node: ExplorerNode): boolean {
-    return node.type === 'group' || node.type === 'folder-ref';
-}
-
-/** crypto.randomUUID を使った衝突リスクのない ID 生成 */
-function generateId(): string {
-    return randomUUID();
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -104,10 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.workspace.onDidRenameFiles(e => treeDataProvider.handleFileRename(e.files)),
         vscode.workspace.onDidDeleteFiles(e => treeDataProvider.handleFileDelete(e.files)),
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('files.exclude')) {
-                treeDataProvider.invalidateExcludeCache();
-                treeDataProvider.refresh();
-            }
+            if (e.affectsConfiguration('files.exclude')) treeDataProvider.refresh();
         }),
         { dispose: () => treeDataProvider.disposeAllWatchers() },
     ];
@@ -226,8 +206,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
                 const diags = vscode.languages.getDiagnostics(vscode.Uri.file(child.filePath));
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Error)) return 'error';
                 if (diags.some(d => d.severity === vscode.DiagnosticSeverity.Warning)) hasWarning = true;
-            } else if (isGroupLike(child) && child.children) {
-                // 【修正】モジュールスコープの isGroupLike を使用（重複定義を排除）
+            } else if (this.isGroupLike(child) && child.children) {
                 const result = this.traverseDiagnostics(child.children);
                 if (result === 'error') return 'error';
                 if (result === 'warning') hasWarning = true;
@@ -236,25 +215,29 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
         return hasWarning ? 'warning' : 'none';
     }
 
+    private isGroupLike(node: ExplorerNode): boolean {
+        return node.type === 'group' || node.type === 'folder-ref';
+    }
+
     public fireDidChangeFileDecorations(uris: ReadonlyArray<vscode.Uri>) {
-        // 【修正】文字列→再パースを排除: Map<string, vscode.Uri> で管理
-        const urisToUpdate = new Map<string, vscode.Uri>();
+        const urisToUpdate = new Set<string>();
 
         for (const uri of uris) {
-            urisToUpdate.set(uri.toString(), uri);
+            urisToUpdate.add(uri.toString());
 
             const node = this.treeDataProvider.getNodeByUri(uri);
             if (node) {
                 let parent = this.treeDataProvider.getParent(node);
                 while (parent) {
-                    const groupUri = this.treeDataProvider.getGroupUri(parent);
-                    urisToUpdate.set(groupUri.toString(), groupUri);
+                    urisToUpdate.add(this.treeDataProvider.getGroupUri(parent).toString());
                     parent = this.treeDataProvider.getParent(parent);
                 }
             }
         }
 
-        this._onDidChangeFileDecorations.fire(Array.from(urisToUpdate.values()));
+        this._onDidChangeFileDecorations.fire(
+            Array.from(urisToUpdate).map(u => vscode.Uri.parse(u))
+        );
     }
 }
 
@@ -273,18 +256,6 @@ class CustomTreeDataProvider implements
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
-    /**
-     * 【修正】parentMap: getParent を O(n) 全探索から O(1) に改善。
-     * key = ノードID, value = 親ノード（ルートノードはエントリなし）
-     */
-    private parentMap: Map<string, ExplorerNode> = new Map();
-
-    /**
-     * 【修正】files.exclude 設定のキャッシュ。
-     * onDidChangeConfiguration で invalidateExcludeCache() を呼んでリセットする。
-     */
-    private excludePatterns: { [key: string]: boolean } | null = null;
-
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
     // 'text/uri-list' を追加: folder-ref / folder-ref配下のgroupノードを外部へD&D可能にする
     public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list'];
@@ -295,31 +266,35 @@ class CustomTreeDataProvider implements
 
     // --- ノード判定ヘルパー ---
 
-    /**
-     * 【修正】isChildOfFolderRef: parentMap を使って O(1) ルックアップで判定。
-     * getParent → findParent の O(n) 全探索を廃止。
-     */
+    private isGroupLike(node: ExplorerNode): boolean {
+        return node.type === 'group' || node.type === 'folder-ref';
+    }
+
     private isChildOfFolderRef(node: ExplorerNode): boolean {
-        // node 自身の isUnderFolderRef フラグ（rebuildIndex 時に付与）を参照
-        return node.isUnderFolderRef === true;
+        let current = this.getParent(node);
+        while (current) {
+            if (current.type === 'folder-ref') return true;
+            current = this.getParent(current);
+        }
+        return false;
     }
 
     // --- ノード生成ファクトリ ---
 
     private createFileNode(label: string, filePath: string): ExplorerNode {
-        return { id: generateId(), label, type: 'file-ref', filePath };
+        return { id: this.generateId(), label, type: 'file-ref', filePath };
     }
 
     private createGroupNode(
         label: string,
         collapsibleState = vscode.TreeItemCollapsibleState.Expanded
     ): ExplorerNode {
-        return { id: generateId(), label, type: 'group', children: [], collapsibleState };
+        return { id: this.generateId(), label, type: 'group', children: [], collapsibleState };
     }
 
     private createFolderRefNode(label: string, linkedPath: string): ExplorerNode {
         return {
-            id: generateId(),
+            id: this.generateId(),
             label,
             type: 'folder-ref',
             linkedPath,
@@ -378,42 +353,29 @@ class CustomTreeDataProvider implements
 
     // --- インデックス管理 ---
 
-    /**
-     * 【修正】rebuildIndex: parentMap・isUnderFolderRef フラグも同時に構築。
-     * これにより getParent・isChildOfFolderRef が O(1) で動作する。
-     */
     private rebuildIndex() {
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
-        this.parentMap.clear();
 
-        const traverse = (nodes: ExplorerNode[], parentPath: string, parentNode: ExplorerNode | undefined, underFolderRef: boolean) => {
+        const traverse = (nodes: ExplorerNode[], parentPath = '') => {
             for (const node of nodes) {
                 node.cachedTreePath = `${parentPath}/${node.label}`;
-                node.isUnderFolderRef = underFolderRef;
-
-                // parentMap に登録（ルートノードはエントリなし）
-                if (parentNode) {
-                    this.parentMap.set(node.id, parentNode);
-                }
 
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
                 }
 
-                if (isGroupLike(node)) {
+                if (this.isGroupLike(node)) {
                     this.uriToNodeMap.set(this.getGroupUri(node).toString(), node);
                 }
 
                 this.uriToNodeMap.set(this.getCustomExplorerUri(node).toString(), node);
 
-                if (node.children) {
-                    traverse(node.children, node.cachedTreePath, node, underFolderRef || node.type === 'folder-ref');
-                }
+                if (node.children) traverse(node.children, node.cachedTreePath);
             }
         };
-        traverse(this.data, '', undefined, false);
+        traverse(this.data);
     }
 
     // --- ファイル変更ハンドラ ---
@@ -465,7 +427,7 @@ class CustomTreeDataProvider implements
     getTreeItem(element: ExplorerNode): vscode.TreeItem {
         const treeItem = new vscode.TreeItem(
             element.label,
-            isGroupLike(element)
+            this.isGroupLike(element)
                 ? (element.collapsibleState ?? vscode.TreeItemCollapsibleState.Expanded)
                 : vscode.TreeItemCollapsibleState.None
         );
@@ -476,9 +438,7 @@ class CustomTreeDataProvider implements
         if (element.type === 'file-ref' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = { command: 'vscode.open', title: 'Open File', arguments: [treeItem.resourceUri] };
-            // 【修正】isChildOfFolderRef は isUnderFolderRef フラグ参照に変わったので
-            //         getTreeItem からの呼び出しコストはゼロ
-            if (!element.isUnderFolderRef) {
+            if (!this.isChildOfFolderRef(element)) {
                 const parentDir = path.basename(path.dirname(element.filePath));
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
@@ -496,8 +456,7 @@ class CustomTreeDataProvider implements
 
     private resolveContextValue(element: ExplorerNode): string {
         if (element.type === 'folder-ref') return 'folder-ref';
-        // 【修正】isUnderFolderRef フラグを直接参照（O(1)）
-        if (element.isUnderFolderRef) {
+        if (this.isChildOfFolderRef(element)) {
             return element.type === 'file-ref' ? 'folder-ref-child-file' : 'folder-ref-child-folder';
         }
         return element.type; // 'group' or 'file-ref'
@@ -508,12 +467,19 @@ class CustomTreeDataProvider implements
         return nodes.filter(n => !n.filePath || !this.shouldExclude(n.filePath));
     }
 
-    /**
-     * 【修正】getParent: parentMap による O(1) ルックアップ。
-     * findParent の全探索を廃止。
-     */
-    public getParent(element: ExplorerNode): ExplorerNode | undefined {
-        return this.parentMap.get(element.id);
+    getParent(element: ExplorerNode): ExplorerNode | undefined {
+        return this.findParent(this.data, element);
+    }
+
+    private findParent(nodes: ExplorerNode[], target: ExplorerNode): ExplorerNode | undefined {
+        for (const node of nodes) {
+            if (node.children?.includes(target)) return node;
+            if (node.children) {
+                const found = this.findParent(node.children, target);
+                if (found) return found;
+            }
+        }
+        return undefined;
     }
 
     // --- ドラッグ＆ドロップ ---
@@ -538,7 +504,7 @@ class CustomTreeDataProvider implements
     //   - それ以外              : undefined（外部D&D不可）
     private resolveFsPathForDrag(node: ExplorerNode): string | undefined {
         if (node.type === 'folder-ref' && node.linkedPath) return node.linkedPath;
-        if (node.type === 'group' && node.isUnderFolderRef) return this.resolveGroupFsPath(node);
+        if (node.type === 'group' && this.isChildOfFolderRef(node)) return this.resolveGroupFsPath(node);
         return undefined;
     }
 
@@ -558,10 +524,6 @@ class CustomTreeDataProvider implements
         return undefined;
     }
 
-    /**
-     * 【修正】handleDrop: 同期 fs.statSync / fs.existsSync を廃止し、
-     * vscode.workspace.fs.stat（非同期）に統一。
-     */
     public async handleDrop(target: ExplorerNode | undefined, dataTransfer: vscode.DataTransfer, _token: vscode.CancellationToken): Promise<void> {
         const internalDrag = dataTransfer.get(MIME_INTERNAL);
         if (internalDrag) {
@@ -571,7 +533,7 @@ class CustomTreeDataProvider implements
         }
 
         // 外部(OS)からのD&Dは folder-ref およびその配下へのドロップを禁止する
-        if (target && (target.type === 'folder-ref' || target.isUnderFolderRef)) return;
+        if (target && (target.type === 'folder-ref' || this.isChildOfFolderRef(target))) return;
 
         const uriListItem = dataTransfer.get('text/uri-list');
         const plainTextItem = dataTransfer.get('text/plain');
@@ -581,9 +543,9 @@ class CustomTreeDataProvider implements
 
         if (!uriString) return;
 
-        const paths = await this.resolveDroppedPaths(uriString);
-        for (const { fsPath, isDirectory } of paths) {
-            if (isDirectory) {
+        const paths = this.resolveDroppedPaths(uriString);
+        for (const fsPath of paths) {
+            if (fs.statSync(fsPath).isDirectory()) {
                 this.addFolderRef(fsPath, target);
             } else {
                 this.addFile(fsPath, target);
@@ -591,49 +553,20 @@ class CustomTreeDataProvider implements
         }
     }
 
-    /**
-     * 【修正】resolveDroppedPaths: fs.existsSync を廃止し、
-     * vscode.workspace.fs.stat（非同期）でパスの存在確認とファイル種別を同時に取得。
-     */
-    private async resolveDroppedPaths(uriString: string): Promise<{ fsPath: string; isDirectory: boolean }[]> {
-        const rawPaths = uriString
+    private resolveDroppedPaths(uriString: string): string[] {
+        return uriString
             .split(/\r?\n/)
             .map(line => line.trim())
             .filter(Boolean)
-            .map(raw => raw.startsWith('file://') ? vscode.Uri.parse(raw).fsPath : raw);
-
-        const results: { fsPath: string; isDirectory: boolean }[] = [];
-        for (const fsPath of rawPaths) {
-            try {
-                const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fsPath));
-                results.push({ fsPath, isDirectory: stat.type === vscode.FileType.Directory });
-            } catch {
-                // 存在しないパスはスキップ
-            }
-        }
-        return results;
+            .map(raw => raw.startsWith('file://') ? vscode.Uri.parse(raw).fsPath : raw)
+            .filter(p => fs.existsSync(p));
     }
 
     // --- データ操作 ---
 
-    /**
-     * 【修正】shouldExclude: files.exclude 設定をキャッシュし、
-     * getChildren から呼ばれるたびに getConfiguration を呼ばないようにする。
-     * キャッシュは invalidateExcludeCache() で破棄する。
-     */
-    public invalidateExcludeCache(): void {
-        this.excludePatterns = null;
-    }
-
-    private getExcludePatterns(): { [key: string]: boolean } {
-        if (this.excludePatterns !== null) return this.excludePatterns;
-        const config = vscode.workspace.getConfiguration('files');
-        this.excludePatterns = config.get<{ [key: string]: boolean }>('exclude') || {};
-        return this.excludePatterns;
-    }
-
     private shouldExclude(filePath: string): boolean {
-        const excludes = this.getExcludePatterns();
+        const config = vscode.workspace.getConfiguration('files', vscode.Uri.file(filePath));
+        const excludes = config.get<{ [key: string]: boolean }>('exclude') || {};
 
         const relativePath = vscode.workspace.asRelativePath(filePath, false).split(path.sep).join('/');
         const fileName = path.basename(filePath);
@@ -746,7 +679,7 @@ class CustomTreeDataProvider implements
     }
 
     private appendToParent(node: ExplorerNode, parent?: ExplorerNode) {
-        if (parent && isGroupLike(parent)) {
+        if (parent && this.isGroupLike(parent)) {
             (parent.children ??= []).push(node);
             parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
         } else {
@@ -790,7 +723,7 @@ class CustomTreeDataProvider implements
             if (!isValidMove(source, target)) continue;
             if (!this.removeNode(source, false)) continue;
 
-            if (target && isGroupLike(target)) {
+            if (target && this.isGroupLike(target)) {
                 (target.children ??= []).push(source);
                 target.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
             } else {
@@ -827,14 +760,10 @@ class CustomTreeDataProvider implements
         }
     }
 
-    /**
-     * 【修正】setCollapsibleStateRecursive: ID の再生成を廃止。
-     * ID を変えると VSCode が選択・フォーカス状態を失うため、
-     * collapsibleState のみ更新し、差分リフレッシュで対応する。
-     */
     private setCollapsibleStateRecursive(node: ExplorerNode, state: vscode.TreeItemCollapsibleState) {
-        if (!isGroupLike(node)) return;
+        if (!this.isGroupLike(node)) return;
         node.collapsibleState = state;
+        node.id = this.generateId();
         node.children?.forEach(child => this.setCollapsibleStateRecursive(child, state));
     }
 
@@ -857,15 +786,10 @@ class CustomTreeDataProvider implements
         this.context.workspaceState.update(STORAGE_KEY, this.data);
     }
 
-    /**
-     * 【修正】sortNodesRecursive: ソートはインポート時のみ呼び出し、
-     * ドラッグ&ドロップによる手動並び替えを上書きしないよう saveData から分離。
-     * saveData では呼ばず、インポート系メソッドから明示的に呼ぶ。
-     */
     private sortNodesRecursive(nodes: ExplorerNode[]) {
         nodes.sort((a, b) => {
-            const aGroup = isGroupLike(a);
-            const bGroup = isGroupLike(b);
+            const aGroup = this.isGroupLike(a);
+            const bGroup = this.isGroupLike(b);
             if (aGroup !== bGroup) return aGroup ? -1 : 1;
             return a.label.localeCompare(b.label);
         });
@@ -899,6 +823,10 @@ class CustomTreeDataProvider implements
             }
         };
         restoreWatchers(this.data);
+    }
+
+    private generateId(): string {
+        return Math.random().toString(36).substring(2, 15);
     }
 
     private updateContextKey() {
