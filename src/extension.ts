@@ -258,6 +258,7 @@ class CustomTreeDataProvider implements
     private data: ExplorerNode[] = [];
     private pathIndex: Map<string, ExplorerNode> = new Map();
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
+    private parentMap: Map<ExplorerNode, ExplorerNode> = new Map();
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
@@ -275,10 +276,10 @@ class CustomTreeDataProvider implements
     }
 
     private isChildOfFolderRef(node: ExplorerNode): boolean {
-        let current = this.getParent(node);
+        let current = this.parentMap.get(node);
         while (current) {
             if (current.type === 'folder-ref') return true;
-            current = this.getParent(current);
+            current = this.parentMap.get(current);
         }
         return false;
     }
@@ -360,10 +361,13 @@ class CustomTreeDataProvider implements
     private rebuildIndex() {
         this.pathIndex.clear();
         this.uriToNodeMap.clear();
+        this.parentMap.clear();
 
-        const traverse = (nodes: ExplorerNode[], parentPath = '') => {
+        const traverse = (nodes: ExplorerNode[], parentPath = '', parent?: ExplorerNode) => {
             for (const node of nodes) {
                 node.cachedTreePath = `${parentPath}/${node.label}`;
+
+                if (parent) this.parentMap.set(node, parent);
 
                 if (node.filePath) {
                     this.pathIndex.set(node.filePath, node);
@@ -376,7 +380,7 @@ class CustomTreeDataProvider implements
 
                 this.uriToNodeMap.set(this.getCustomExplorerUri(node).toString(), node);
 
-                if (node.children) traverse(node.children, node.cachedTreePath);
+                if (node.children) traverse(node.children, node.cachedTreePath, node);
             }
         };
         traverse(this.data);
@@ -472,18 +476,7 @@ class CustomTreeDataProvider implements
     }
 
     getParent(element: ExplorerNode): ExplorerNode | undefined {
-        return this.findParent(this.data, element);
-    }
-
-    private findParent(nodes: ExplorerNode[], target: ExplorerNode): ExplorerNode | undefined {
-        for (const node of nodes) {
-            if (node.children?.includes(target)) return node;
-            if (node.children) {
-                const found = this.findParent(node.children, target);
-                if (found) return found;
-            }
-        }
-        return undefined;
+        return this.parentMap.get(element);
     }
 
     // --- ドラッグ＆ドロップ ---
@@ -755,6 +748,8 @@ class CustomTreeDataProvider implements
     private applyCollapsibleState(node: ExplorerNode | undefined, state: vscode.TreeItemCollapsibleState) {
         const targets = node ? [node] : this.data;
         targets.forEach(t => this.setCollapsibleStateRecursive(t, state));
+        // setCollapsibleStateRecursive でIDが再生成されるため、インデックスを再構築する
+        this.rebuildIndex();
         this.context.workspaceState.update(STORAGE_KEY, this.data);
 
         if (node) {
@@ -819,9 +814,16 @@ class CustomTreeDataProvider implements
         const collator = this.buildCollator(lexOption);
         const compareFn = this.buildCompareFn(sortOrder, collator);
 
+        this.sortNodesRecursiveWith(nodes, compareFn);
+    }
+
+    private sortNodesRecursiveWith(
+        nodes: ExplorerNode[],
+        compareFn: (a: ExplorerNode, b: ExplorerNode) => number
+    ): void {
         nodes.sort(compareFn);
         nodes.forEach(node => {
-            if (node.children?.length) this.sortNodesRecursive(node.children);
+            if (node.children?.length) this.sortNodesRecursiveWith(node.children, compareFn);
         });
     }
 
