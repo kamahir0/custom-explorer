@@ -88,6 +88,10 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.workspace.onDidDeleteFiles(e => treeDataProvider.handleFileDelete(e.files)),
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('files.exclude')) treeDataProvider.refresh();
+            if (
+                e.affectsConfiguration('explorer.sortOrder') ||
+                e.affectsConfiguration('explorer.sortOrderLexicographicOptions')
+            ) treeDataProvider.saveAndRefresh();
         }),
         { dispose: () => treeDataProvider.disposeAllWatchers() },
     ];
@@ -786,16 +790,161 @@ class CustomTreeDataProvider implements
         this.context.workspaceState.update(STORAGE_KEY, this.data);
     }
 
-    private sortNodesRecursive(nodes: ExplorerNode[]) {
-        nodes.sort((a, b) => {
-            const aGroup = this.isGroupLike(a);
-            const bGroup = this.isGroupLike(b);
-            if (aGroup !== bGroup) return aGroup ? -1 : 1;
-            return a.label.localeCompare(b.label);
-        });
+    // ---------------------------------------------------------------------------
+    // VSCode標準エクスプローラと同等のソート
+    // ---------------------------------------------------------------------------
+
+    /**
+     * explorer.sortOrder / explorer.sortOrderLexicographicOptions を読み取り、
+     * 標準エクスプローラと同等のソート順でノードを再帰的に並べ替える。
+     *
+     * sortOrder の対応状況:
+     *   default         : フォルダ優先 → 名前の自然順 (localeCompare)
+     *   mixed           : 型混在で名前順
+     *   filesFirst      : ファイル優先 → 名前順
+     *   type            : 拡張子順 → 名前順
+     *   modified        : 更新日時降順（groupは先頭固定、取得失敗時は名前順にフォールバック）
+     *   foldersNestsFiles: ツリー構造変更を伴うため非対応。defaultと同じ挙動にフォールバック
+     *
+     * group/folder-ref の優先度:
+     *   フォルダ優先系  : group(0) > folder-ref(1) > file-ref(2)
+     *   ファイル優先系  : file-ref(0) > folder-ref(1) > group(2)
+     *   mixed          : 型による優先度なし（名前のみで比較）
+     */
+    private sortNodesRecursive(nodes: ExplorerNode[]): void {
+        const explorerConfig = vscode.workspace.getConfiguration('explorer');
+        const sortOrder = explorerConfig.get<string>('sortOrder') ?? 'default';
+        const lexOption = explorerConfig.get<string>('sortOrderLexicographicOptions') ?? 'default';
+
+        const collator = this.buildCollator(lexOption);
+        const compareFn = this.buildCompareFn(sortOrder, collator);
+
+        nodes.sort(compareFn);
         nodes.forEach(node => {
             if (node.children?.length) this.sortNodesRecursive(node.children);
         });
+    }
+
+    /**
+     * lexicographicOptions に基づいた Intl.Collator を生成する。
+     * 'default' は VSCode の挙動に合わせて numeric: true で自然順ソート。
+     */
+    private buildCollator(lexOption: string): Intl.Collator {
+        switch (lexOption) {
+            case 'upper':
+                // 大文字優先 (A < a)
+                return new Intl.Collator(undefined, { numeric: true, caseFirst: 'upper' });
+            case 'lower':
+                // 小文字優先 (a < A)
+                return new Intl.Collator(undefined, { numeric: true, caseFirst: 'lower' });
+            case 'unicode':
+                // Unicodeコードポイント順（大文字 < 小文字）
+                return new Intl.Collator('en', { numeric: false, sensitivity: 'variant', caseFirst: 'upper' });
+            case 'default':
+            default:
+                // 大文字小文字を区別しない自然順（VSCode既定）
+                return new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+        }
+    }
+
+    /**
+     * sortOrder に応じた比較関数を返す。
+     * group/folder-ref の型優先度はここで制御する。
+     */
+    private buildCompareFn(
+        sortOrder: string,
+        collator: Intl.Collator
+    ): (a: ExplorerNode, b: ExplorerNode) => number {
+        switch (sortOrder) {
+            case 'mixed':
+                // 型による優先度なし: 名前のみで比較
+                return (a, b) => collator.compare(a.label, b.label);
+
+            case 'filesFirst':
+                // ファイル優先: file-ref(0) > folder-ref(1) > group(2)
+                return (a, b) => {
+                    const pa = this.getFilesFirstPriority(a);
+                    const pb = this.getFilesFirstPriority(b);
+                    if (pa !== pb) return pa - pb;
+                    return collator.compare(a.label, b.label);
+                };
+
+            case 'type':
+                // 拡張子順: 同拡張子内はフォルダ優先 → 名前順
+                return (a, b) => {
+                    const aGroup = this.isGroupLike(a);
+                    const bGroup = this.isGroupLike(b);
+                    // フォルダ同士 or ファイル同士でない場合はフォルダを先に
+                    if (aGroup !== bGroup) return aGroup ? -1 : 1;
+                    // 同種なら拡張子で比較（フォルダは拡張子なしとして扱う）
+                    const extA = aGroup ? '' : this.getExtension(a.label);
+                    const extB = bGroup ? '' : this.getExtension(b.label);
+                    const extCmp = collator.compare(extA, extB);
+                    if (extCmp !== 0) return extCmp;
+                    return collator.compare(a.label, b.label);
+                };
+
+            case 'modified':
+                // 更新日時降順: groupは常に先頭、取得失敗時は名前順フォールバック
+                return (a, b) => {
+                    const aGroup = this.isGroupLike(a);
+                    const bGroup = this.isGroupLike(b);
+                    if (aGroup && bGroup) return collator.compare(a.label, b.label);
+                    if (aGroup) return -1;
+                    if (bGroup) return 1;
+                    // どちらもファイル系: mtime降順
+                    const mtimeA = this.getMtime(a);
+                    const mtimeB = this.getMtime(b);
+                    if (mtimeA !== undefined && mtimeB !== undefined) return mtimeB - mtimeA;
+                    if (mtimeA !== undefined) return -1;
+                    if (mtimeB !== undefined) return 1;
+                    return collator.compare(a.label, b.label);
+                };
+
+            case 'foldersNestsFiles':
+            // ツリー構造変更を伴うため非対応: defaultと同等にフォールバック
+            case 'default':
+            default:
+                // フォルダ優先: group(0) > folder-ref(1) > file-ref(2)
+                return (a, b) => {
+                    const pa = this.getDefaultPriority(a);
+                    const pb = this.getDefaultPriority(b);
+                    if (pa !== pb) return pa - pb;
+                    return collator.compare(a.label, b.label);
+                };
+        }
+    }
+
+    /** default / foldersNestsFiles: group優先、次にfolder-ref、最後にfile-ref */
+    private getDefaultPriority(node: ExplorerNode): number {
+        if (node.type === 'group') return 0;
+        if (node.type === 'folder-ref') return 1;
+        return 2; // file-ref
+    }
+
+    /** filesFirst: file-ref優先、次にfolder-ref、最後にgroup */
+    private getFilesFirstPriority(node: ExplorerNode): number {
+        if (node.type === 'file-ref') return 0;
+        if (node.type === 'folder-ref') return 1;
+        return 2; // group
+    }
+
+    /** ファイル名から拡張子を取得（ドットファイルは拡張子なし扱い） */
+    private getExtension(label: string): string {
+        const dotIndex = label.lastIndexOf('.');
+        if (dotIndex <= 0) return ''; // "." や拡張子なし
+        return label.substring(dotIndex + 1).toLowerCase();
+    }
+
+    /** file-ref / folder-ref の更新日時(ms)を取得。取得失敗時は undefined */
+    private getMtime(node: ExplorerNode): number | undefined {
+        const fsPath = node.filePath ?? node.linkedPath;
+        if (!fsPath) return undefined;
+        try {
+            return fs.statSync(fsPath).mtimeMs;
+        } catch {
+            return undefined;
+        }
     }
 
     private migrateData(nodes: ExplorerNode[]): void {
