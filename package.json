@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -62,12 +62,12 @@
       },
       {
         "command": "customExplorer.removeEntry",
-        "title": "削除",
-        "icon": "$(trash)"
+        "title": "取り除く",
+        "icon": "$(close)"
       },
       {
         "command": "customExplorer.renameEntry",
-        "title": "名前の変更...",
+        "title": "グループ名の変更...",
         "icon": "$(edit)"
       },
       {
@@ -94,6 +94,54 @@
         "command": "customExplorer.convertToGroup",
         "title": "グループに変換",
         "icon": "$(link-external)"
+      },
+      {
+        "command": "customExplorer.newFile",
+        "title": "新しいファイル..."
+      },
+      {
+        "command": "customExplorer.newFolder",
+        "title": "新しいフォルダー..."
+      },
+      {
+        "command": "customExplorer.openToSide",
+        "title": "横に並べて開く"
+      },
+      {
+        "command": "customExplorer.openWith",
+        "title": "ファイルを開くアプリケーションの選択..."
+      },
+      {
+        "command": "customExplorer.renameFile",
+        "title": "名前の変更..."
+      },
+      {
+        "command": "customExplorer.deleteFile",
+        "title": "削除"
+      },
+      {
+        "command": "customExplorer.revealInMac",
+        "title": "Reveal in Finder"
+      },
+      {
+        "command": "customExplorer.revealInWindows",
+        "title": "エクスプローラーで表示"
+      },
+      {
+        "command": "customExplorer.revealInLinux",
+        "title": "ファイルが含まれているフォルダーを開く"
+      },
+      {
+        "command": "customExplorer.openInTerminal",
+        "title": "統合ターミナルで開く"
+      },
+      {
+        "command": "customExplorer.copyPath",
+        "title": "パスのコピー"
+      },
+      {
+        "command": "customExplorer.copyRelativePath",
+        "title": "相対パスのコピー"
       }
     ],
     "menus": {
@@ -138,22 +186,82 @@
         {
           "command": "customExplorer.addGroup",
           "when": "view == custom-explorer-view && viewItem == group",
-          "group": "1_modification@1"
+          "group": "1_custom_mod@1"
         },
         {
           "command": "customExplorer.renameEntry",
           "when": "view == custom-explorer-view && viewItem == group",
-          "group": "1_modification@2"
+          "group": "1_custom_mod@2"
         },
         {
           "command": "customExplorer.convertToGroup",
           "when": "view == custom-explorer-view && viewItem == folder-ref",
-          "group": "1_modification@3"
+          "group": "1_custom_mod@3"
         },
         {
           "command": "customExplorer.removeEntry",
           "when": "view == custom-explorer-view && (viewItem == group || viewItem == file-ref || viewItem == folder-ref)",
-          "group": "2_destructive@1"
+          "group": "1_custom_mod@4"
+        },
+        {
+          "command": "customExplorer.newFile",
+          "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
+          "group": "3_standard_new@1"
+        },
+        {
+          "command": "customExplorer.newFolder",
+          "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
+          "group": "3_standard_new@2"
+        },
+        {
+          "command": "customExplorer.openToSide",
+          "when": "view == custom-explorer-view && (viewItem == file-ref || viewItem == folder-ref-child-file)",
+          "group": "4_standard_open@1"
+        },
+        {
+          "command": "customExplorer.revealInMac",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isMac",
+          "group": "4_standard_open@2"
+        },
+        {
+          "command": "customExplorer.revealInWindows",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isWindows",
+          "group": "4_standard_open@2"
+        },
+        {
+          "command": "customExplorer.revealInLinux",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isLinux",
+          "group": "4_standard_open@2"
+        },
+        {
+          "command": "customExplorer.openWith",
+          "when": "view == custom-explorer-view && (viewItem == file-ref || viewItem == folder-ref-child-file)",
+          "group": "4_standard_open@3"
+        },
+        {
+          "command": "customExplorer.openInTerminal",
+          "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
+          "group": "4_standard_open@4"
+        },
+        {
+          "command": "customExplorer.copyPath",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/",
+          "group": "5_standard_path@1"
+        },
+        {
+          "command": "customExplorer.copyRelativePath",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/",
+          "group": "5_standard_path@2"
+        },
+        {
+          "command": "customExplorer.renameFile",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/",
+          "group": "6_standard_edit@1"
+        },
+        {
+          "command": "customExplorer.deleteFile",
+          "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/",
+          "group": "6_standard_edit@2"
         }
       ]
     }

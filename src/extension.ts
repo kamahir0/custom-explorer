@@ -98,6 +98,14 @@ export function activate(context: vscode.ExtensionContext) {
         { dispose: () => treeDataProvider.disposeAllWatchers() },
     ];
 
+    // --- 汎用コマンド実行ラッパー ---
+    const executeStandardCommand = (builtinCommandId: string) => async (node: ExplorerNode) => {
+        const fsPath = treeDataProvider.resolveFsPath(node);
+        if (fsPath) {
+            await vscode.commands.executeCommand(builtinCommandId, vscode.Uri.file(fsPath));
+        }
+    };
+
     // --- コマンド定義テーブル ---
     const commandTable: [string, (...args: any[]) => any][] = [
         ['customExplorer.importFromWorkspace', async () => {
@@ -159,6 +167,30 @@ export function activate(context: vscode.ExtensionContext) {
         ['customExplorer.collapseAll', () => treeDataProvider.collapseRecursive(undefined)],
         ['customExplorer.expandAll', () => treeDataProvider.expandRecursive(undefined)],
         ['customExplorer.convertToGroup', (node: ExplorerNode) => treeDataProvider.convertToGroup(node)],
+
+        // --- 新規作成系 (組み込みコマンドへ委譲) ---
+        ['customExplorer.newFile', executeStandardCommand('explorer.newFile')],
+        ['customExplorer.newFolder', executeStandardCommand('explorer.newFolder')],
+
+        // --- 実ファイル操作 (組み込みコマンドへ委譲) ---
+        ['customExplorer.renameFile', executeStandardCommand('renameFile')],
+        ['customExplorer.deleteFile', executeStandardCommand('moveFileToTrash')],
+
+        // --- OS連携・パス操作・開く系 (組み込みコマンドへ委譲) ---
+        ['customExplorer.openToSide', async (node: ExplorerNode) => {
+            const fsPath = treeDataProvider.resolveFsPath(node);
+            if (fsPath) {
+                // ファイルを現在のエディタの「横（Beside）」に開く
+                await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(fsPath), { viewColumn: vscode.ViewColumn.Beside });
+            }
+        }],
+        ['customExplorer.revealInMac', executeStandardCommand('revealFileInOS')],
+        ['customExplorer.revealInWindows', executeStandardCommand('revealFileInOS')],
+        ['customExplorer.revealInLinux', executeStandardCommand('revealFileInOS')],
+        ['customExplorer.openWith', executeStandardCommand('explorer.openWith')],
+        ['customExplorer.openInTerminal', executeStandardCommand('openInTerminal')],
+        ['customExplorer.copyPath', executeStandardCommand('copyFilePath')],
+        ['customExplorer.copyRelativePath', executeStandardCommand('copyRelativeFilePath')],
     ];
 
     context.subscriptions.push(
@@ -326,6 +358,14 @@ class CustomTreeDataProvider implements
     public getTreePathUri(node: ExplorerNode): vscode.Uri {
         const treePath = node.cachedTreePath || ('/' + node.label);
         return vscode.Uri.parse(`${URI_SCHEME}://tree${treePath}`);
+    }
+
+    // --- 実パス解決 (OS操作系コマンド等で使用) ---
+    public resolveFsPath(node: ExplorerNode): string | undefined {
+        if (node.filePath) return node.filePath;
+        if (node.type === 'folder-ref' && node.linkedPath) return node.linkedPath;
+        if (node.type === 'group' && this.isChildOfFolderRef(node)) return this.resolveGroupFsPath(node);
+        return undefined;
     }
 
     // --- ファイルシステムウォッチャー ---
