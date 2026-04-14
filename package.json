@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -206,42 +206,42 @@
         {
           "command": "customExplorer.newFile",
           "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
-          "group": "3_standard_new@1"
+          "group": "3_standard@1"
         },
         {
           "command": "customExplorer.newFolder",
           "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
-          "group": "3_standard_new@2"
+          "group": "3_standard@2"
         },
         {
           "command": "customExplorer.openToSide",
           "when": "view == custom-explorer-view && (viewItem == file-ref || viewItem == folder-ref-child-file)",
-          "group": "4_standard_open@1"
+          "group": "3_standard@3"
         },
         {
           "command": "customExplorer.revealInMac",
           "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isMac",
-          "group": "4_standard_open@2"
+          "group": "3_standard@4"
         },
         {
           "command": "customExplorer.revealInWindows",
           "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isWindows",
-          "group": "4_standard_open@2"
+          "group": "3_standard@4"
         },
         {
           "command": "customExplorer.revealInLinux",
           "when": "view == custom-explorer-view && viewItem =~ /file-ref|folder-ref/ && isLinux",
-          "group": "4_standard_open@2"
+          "group": "3_standard@4"
         },
         {
           "command": "customExplorer.openWith",
           "when": "view == custom-explorer-view && (viewItem == file-ref || viewItem == folder-ref-child-file)",
-          "group": "4_standard_open@3"
+          "group": "3_standard@5"
         },
         {
           "command": "customExplorer.openInTerminal",
           "when": "view == custom-explorer-view && (viewItem == folder-ref || viewItem == folder-ref-child-folder)",
-          "group": "4_standard_open@4"
+          "group": "3_standard@6"
         },
         {
           "command": "customExplorer.copyPath",
