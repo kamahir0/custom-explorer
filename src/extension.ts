@@ -267,6 +267,7 @@ class ProblemFileDecorationProvider implements vscode.FileDecorationProvider {
             if (node) {
                 let parent = this.treeDataProvider.getParent(node);
                 while (parent) {
+                    urisToUpdate.add(this.treeDataProvider.getDisplayUri(parent).toString());
                     urisToUpdate.add(this.treeDataProvider.getGroupUri(parent).toString());
                     parent = this.treeDataProvider.getParent(parent);
                 }
@@ -295,8 +296,7 @@ class CustomTreeDataProvider implements
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
-    // 'text/uri-list' を追加: folder-ref / folder-ref配下のgroupノードを外部へD&D可能にする
-    public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list'];
+    public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
 
     constructor(private context: vscode.ExtensionContext) {
         this.loadData();
@@ -360,6 +360,11 @@ class CustomTreeDataProvider implements
         return vscode.Uri.parse(`${URI_SCHEME}://tree${treePath}`);
     }
 
+    public getDisplayUri(node: ExplorerNode): vscode.Uri {
+        const fsPath = this.resolveFsPath(node);
+        return fsPath ? vscode.Uri.file(fsPath) : this.getTreePathUri(node);
+    }
+
     // --- 実パス解決 (OS操作系コマンド等で使用) ---
     public resolveFsPath(node: ExplorerNode): string | undefined {
         if (node.filePath) return node.filePath;
@@ -411,6 +416,9 @@ class CustomTreeDataProvider implements
                     this.pathIndex.set(node.filePath, node);
                     this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
                 }
+
+                const displayUri = this.getDisplayUri(node);
+                this.uriToNodeMap.set(displayUri.toString(), node);
 
                 if (this.isGroupLike(node)) {
                     this.uriToNodeMap.set(this.getGroupUri(node).toString(), node);
@@ -489,7 +497,7 @@ class CustomTreeDataProvider implements
                 treeItem.description = parentDir ? `${parentDir}/` : undefined;
             }
         } else {
-            treeItem.resourceUri = this.getTreePathUri(element);
+            treeItem.resourceUri = this.getDisplayUri(element);
             treeItem.iconPath = vscode.ThemeIcon.Folder;
             if (element.type === 'folder-ref' && element.linkedPath) {
                 const parentDir = path.basename(path.dirname(element.linkedPath));
@@ -533,25 +541,12 @@ class CustomTreeDataProvider implements
     public handleDrag(source: readonly ExplorerNode[], dataTransfer: vscode.DataTransfer, _token: vscode.CancellationToken): void {
         dataTransfer.set(MIME_INTERNAL, new vscode.DataTransferItem(source));
 
-        // folder-ref または folder-ref配下のgroupノードを外部へD&DできるようURIを追加
-        const uris = source
-            .map(node => this.resolveFsPathForDrag(node))
-            .filter((p): p is string => p !== undefined)
-            .map(p => vscode.Uri.file(p).toString());
+        const dragPaths = this.collectExternalDragPaths(source);
+        if (dragPaths.length === 0) return;
 
-        if (uris.length > 0) {
-            dataTransfer.set('text/uri-list', new vscode.DataTransferItem(uris.join('\r\n')));
-        }
-    }
-
-    // ドラッグ対象ノードのファイルシステム上の実パスを解決する
-    //   - folder-ref            : linkedPath をそのまま返す
-    //   - folder-ref配下のgroup : 先祖のfolder-refのlinkedPathから相対パスを算出
-    //   - それ以外              : undefined（外部D&D不可）
-    private resolveFsPathForDrag(node: ExplorerNode): string | undefined {
-        if (node.type === 'folder-ref' && node.linkedPath) return node.linkedPath;
-        if (node.type === 'group' && this.isChildOfFolderRef(node)) return this.resolveGroupFsPath(node);
-        return undefined;
+        const uris = dragPaths.map(fsPath => vscode.Uri.file(fsPath).toString());
+        dataTransfer.set('text/uri-list', new vscode.DataTransferItem(uris.join('\r\n')));
+        dataTransfer.set('text/plain', new vscode.DataTransferItem(dragPaths.join('\n')));
     }
 
     // folder-ref配下のgroupノードの実パスを、先祖のfolder-refを起点に解決する
@@ -568,6 +563,20 @@ class CustomTreeDataProvider implements
         }
 
         return undefined;
+    }
+
+    private collectExternalDragPaths(source: readonly ExplorerNode[]): string[] {
+        const seen = new Set<string>();
+        const paths: string[] = [];
+
+        for (const node of source) {
+            const fsPath = this.resolveFsPath(node);
+            if (!fsPath || seen.has(fsPath)) continue;
+            seen.add(fsPath);
+            paths.push(fsPath);
+        }
+
+        return paths;
     }
 
     public async handleDrop(target: ExplorerNode | undefined, dataTransfer: vscode.DataTransfer, _token: vscode.CancellationToken): Promise<void> {
