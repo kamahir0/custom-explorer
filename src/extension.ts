@@ -221,6 +221,46 @@ export function activate(context: vscode.ExtensionContext) {
         input.show();
     };
 
+    const deleteEntry = async (node: ExplorerNode) => {
+        const fsPath = treeDataProvider.resolveFsPath(node);
+        if (!fsPath) {
+            void vscode.window.showErrorMessage('削除対象の実パスを解決できませんでした。');
+            return;
+        }
+
+        const targetUri = vscode.Uri.file(fsPath);
+        let stat: vscode.FileStat;
+        try {
+            stat = await vscode.workspace.fs.stat(targetUri);
+        } catch {
+            void vscode.window.showErrorMessage('削除対象が見つかりませんでした。');
+            return;
+        }
+
+        const label = (stat.type & vscode.FileType.Directory) ? 'フォルダ' : 'ファイル';
+        const action = await vscode.window.showWarningMessage(
+            `${label} "${node.label}" をゴミ箱に移動しますか？`,
+            { modal: true },
+            '移動する'
+        );
+
+        if (action !== '移動する') {
+            return;
+        }
+
+        try {
+            await vscode.workspace.fs.delete(targetUri, {
+                recursive: Boolean(stat.type & vscode.FileType.Directory),
+                useTrash: true,
+            });
+            treeDataProvider.handleFileDelete([targetUri]);
+            treeDataProvider.syncFolderRefAncestor(node);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            void vscode.window.showErrorMessage(`${label}の削除に失敗しました: ${message}`);
+        }
+    };
+
     // --- コマンド定義テーブル ---
     const commandTable: [string, (...args: any[]) => any][] = [
         ['customExplorer.importFromWorkspace', async () => {
@@ -289,7 +329,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         // --- 実ファイル操作 (組み込みコマンドへ委譲) ---
         ['customExplorer.renameFile', executeStandardCommand('renameFile')],
-        ['customExplorer.deleteFile', executeStandardCommand('moveFileToTrash')],
+        ['customExplorer.deleteFile', (node: ExplorerNode) => deleteEntry(node)],
 
         // --- OS連携・パス操作・開く系 (組み込みコマンドへ委譲) ---
         ['customExplorer.openToSide', async (node: ExplorerNode) => {
