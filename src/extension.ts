@@ -54,6 +54,7 @@ interface StoredNode {
 interface ExplorerNode extends StoredNode {
     children?: ExplorerNode[];
     cachedTreePath?: string;
+    transientKind?: 'new-file' | 'new-folder';
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -104,6 +105,120 @@ export function activate(context: vscode.ExtensionContext) {
         if (fsPath) {
             await vscode.commands.executeCommand(builtinCommandId, vscode.Uri.file(fsPath));
         }
+    };
+
+    const getCreationTargetDir = async (node: ExplorerNode): Promise<string | undefined> => {
+        const fsPath = treeDataProvider.resolveFsPath(node);
+        if (!fsPath) {
+            return undefined;
+        }
+
+        try {
+            const stat = await vscode.workspace.fs.stat(vscode.Uri.file(fsPath));
+            return (stat.type & vscode.FileType.Directory) ? fsPath : path.dirname(fsPath);
+        } catch {
+            return undefined;
+        }
+    };
+
+    const parseCreationPath = (input: string): string[] | undefined => {
+        const trimmed = input.trim();
+        if (!trimmed || path.isAbsolute(trimmed)) {
+            return undefined;
+        }
+
+        const segments = trimmed.split(/[\\/]+/).filter(Boolean);
+        if (segments.length === 0 || segments.some(segment => segment === '.' || segment === '..')) {
+            return undefined;
+        }
+
+        return segments;
+    };
+
+    const validateCreationInput = (value: string): string | undefined => {
+        return parseCreationPath(value)
+            ? undefined
+            : '空文字、絶対パス、"."、".." を含むパスは使用できません。';
+    };
+
+    const startInlineCreation = async (node: ExplorerNode, kind: 'file' | 'folder') => {
+        const targetDir = await getCreationTargetDir(node);
+        if (!targetDir) {
+            void vscode.window.showErrorMessage('作成先フォルダを解決できませんでした。');
+            return;
+        }
+
+        const label = kind === 'file' ? 'ファイル' : 'フォルダ';
+        const placeholder = kind === 'file' ? 'example.txt または dir/example.txt' : 'new-folder または dir/new-folder';
+        const pendingNode = treeDataProvider.beginInlineCreation(node, kind);
+        await treeView.reveal(pendingNode, { select: true, focus: false, expand: true });
+
+        const input = vscode.window.createInputBox();
+        let accepted = false;
+        input.ignoreFocusOut = true;
+        input.title = kind === 'file' ? '新しいファイル' : '新しいフォルダー';
+        input.prompt = `${label}名を入力してください`;
+        input.placeholder = placeholder;
+
+        input.onDidChangeValue(value => {
+            treeDataProvider.updateInlineCreationLabel(value);
+            input.validationMessage = validateCreationInput(value);
+        });
+
+        input.onDidAccept(async () => {
+            const segments = parseCreationPath(input.value);
+            if (!segments) {
+                input.validationMessage = validateCreationInput(input.value);
+                return;
+            }
+
+            const targetPath = path.join(targetDir, ...segments);
+            const targetUri = vscode.Uri.file(targetPath);
+
+            try {
+                await vscode.workspace.fs.stat(targetUri);
+                input.validationMessage = `同名の${label}が既に存在します。`;
+                return;
+            } catch {
+                // Not found is expected for new entries.
+            }
+
+            input.enabled = false;
+            input.busy = true;
+            accepted = true;
+
+            try {
+                if (kind === 'folder') {
+                    await vscode.workspace.fs.createDirectory(targetUri);
+                } else {
+                    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(targetPath)));
+                    await vscode.workspace.fs.writeFile(targetUri, new Uint8Array());
+                }
+
+                treeDataProvider.cancelInlineCreation();
+                treeDataProvider.syncFolderRefAncestor(node);
+                input.hide();
+
+                if (kind === 'file') {
+                    await vscode.commands.executeCommand('vscode.open', targetUri);
+                }
+            } catch (error) {
+                accepted = false;
+                input.enabled = true;
+                input.busy = false;
+                const message = error instanceof Error ? error.message : String(error);
+                void vscode.window.showErrorMessage(`${label}の作成に失敗しました: ${message}`);
+            }
+        });
+
+        input.onDidHide(() => {
+            if (!accepted) {
+                treeDataProvider.cancelInlineCreation();
+            }
+            input.dispose();
+        });
+
+        input.show();
     };
 
     // --- コマンド定義テーブル ---
@@ -168,9 +283,9 @@ export function activate(context: vscode.ExtensionContext) {
         ['customExplorer.expandAll', () => treeDataProvider.expandRecursive(undefined)],
         ['customExplorer.convertToGroup', (node: ExplorerNode) => treeDataProvider.convertToGroup(node)],
 
-        // --- 新規作成系 (組み込みコマンドへ委譲) ---
-        ['customExplorer.newFile', executeStandardCommand('explorer.newFile')],
-        ['customExplorer.newFolder', executeStandardCommand('explorer.newFolder')],
+        // --- 新規作成系 (folder-ref配下で一時ノードを見せつつ拡張側で作成) ---
+        ['customExplorer.newFile', (node: ExplorerNode) => startInlineCreation(node, 'file')],
+        ['customExplorer.newFolder', (node: ExplorerNode) => startInlineCreation(node, 'folder')],
 
         // --- 実ファイル操作 (組み込みコマンドへ委譲) ---
         ['customExplorer.renameFile', executeStandardCommand('renameFile')],
@@ -294,6 +409,7 @@ class CustomTreeDataProvider implements
     private pathIndex: Map<string, ExplorerNode> = new Map();
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
+    private pendingCreation?: { parent: ExplorerNode; node: ExplorerNode };
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
     public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
@@ -315,6 +431,10 @@ class CustomTreeDataProvider implements
             current = this.getParent(current);
         }
         return false;
+    }
+
+    private isPendingCreationNode(node: ExplorerNode): boolean {
+        return this.pendingCreation?.node.id === node.id;
     }
 
     // --- ノード生成ファクトリ ---
@@ -489,6 +609,15 @@ class CustomTreeDataProvider implements
         treeItem.id = element.id;
         treeItem.contextValue = this.resolveContextValue(element);
 
+        if (element.transientKind) {
+            treeItem.resourceUri = this.getTreePathUri(element);
+            treeItem.description = '作成中...';
+            treeItem.iconPath = element.transientKind === 'new-file'
+                ? vscode.ThemeIcon.File
+                : vscode.ThemeIcon.Folder;
+            return treeItem;
+        }
+
         if (element.type === 'file-ref' && element.filePath) {
             treeItem.resourceUri = vscode.Uri.file(element.filePath);
             treeItem.command = { command: 'vscode.open', title: 'Open File', arguments: [treeItem.resourceUri] };
@@ -509,7 +638,12 @@ class CustomTreeDataProvider implements
     }
 
     private resolveContextValue(element: ExplorerNode): string {
-        if (element.type === 'folder-ref') return 'folder-ref';
+        if (element.transientKind) {
+            return 'inline-creation';
+        }
+        if (element.type === 'folder-ref') {
+            return 'folder-ref';
+        }
         if (this.isChildOfFolderRef(element)) {
             return element.type === 'file-ref' ? 'folder-ref-child-file' : 'folder-ref-child-folder';
         }
@@ -517,11 +651,17 @@ class CustomTreeDataProvider implements
     }
 
     getChildren(element?: ExplorerNode): ExplorerNode[] {
-        const nodes = element ? (element.children ?? []) : this.data;
-        return nodes.filter(n => !n.filePath || !this.shouldExclude(n.filePath));
+        const nodes = [...(element ? (element.children ?? []) : this.data)];
+        if (this.pendingCreation && this.pendingCreation.parent === element) {
+            nodes.unshift(this.pendingCreation.node);
+        }
+        return nodes.filter(n => n.transientKind || !n.filePath || !this.shouldExclude(n.filePath));
     }
 
     getParent(element: ExplorerNode): ExplorerNode | undefined {
+        if (this.isPendingCreationNode(element)) {
+            return this.pendingCreation?.parent;
+        }
         return this.findParent(this.data, element);
     }
 
@@ -644,6 +784,65 @@ class CustomTreeDataProvider implements
 
     public refresh() {
         this._onDidChangeTreeData.fire();
+    }
+
+    public beginInlineCreation(parent: ExplorerNode, kind: 'file' | 'folder'): ExplorerNode {
+        this.cancelInlineCreation();
+
+        const node: ExplorerNode = kind === 'file'
+            ? {
+                id: this.generateId(),
+                label: '新しいファイル',
+                type: 'file-ref',
+                transientKind: 'new-file',
+            }
+            : {
+                id: this.generateId(),
+                label: '新しいフォルダー',
+                type: 'group',
+                transientKind: 'new-folder',
+                children: [],
+                collapsibleState: vscode.TreeItemCollapsibleState.None,
+            };
+
+        parent.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+        this.pendingCreation = { parent, node };
+        this.refreshParentOrRoot(node);
+        return node;
+    }
+
+    public updateInlineCreationLabel(value: string): void {
+        if (!this.pendingCreation) {
+            return;
+        }
+
+        const fallback = this.pendingCreation.node.transientKind === 'new-file'
+            ? '新しいファイル'
+            : '新しいフォルダー';
+        this.pendingCreation.node.label = value.trim() || fallback;
+        this.refreshParentOrRoot(this.pendingCreation.node);
+    }
+
+    public cancelInlineCreation(): void {
+        if (!this.pendingCreation) {
+            return;
+        }
+        const pendingNode = this.pendingCreation.node;
+        this.pendingCreation = undefined;
+        this.refreshParentOrRoot(pendingNode);
+    }
+
+    public syncFolderRefAncestor(node: ExplorerNode): void {
+        let current: ExplorerNode | undefined = node;
+        while (current) {
+            if (current.type === 'folder-ref') {
+                this.syncFolderRef(current);
+                return;
+            }
+            current = this.getParent(current);
+        }
+
+        this.refresh();
     }
 
     // importDirectory と syncFolderRef から共用するディレクトリ再帰スキャン処理
