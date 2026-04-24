@@ -78,6 +78,13 @@ export function activate(context: vscode.ExtensionContext) {
         }
     };
 
+    const revealNodeByPath = async (targetPath: string) => {
+        const foundNode = treeDataProvider.findNodeByPath(targetPath);
+        if (foundNode) {
+            await treeView.reveal(foundNode, { select: true, focus: false, expand: true });
+        }
+    };
+
     syncTreeSelection(vscode.window.activeTextEditor);
 
     const decorationProvider = new ProblemFileDecorationProvider(treeDataProvider);
@@ -197,6 +204,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 treeDataProvider.cancelInlineCreation();
                 treeDataProvider.syncFolderRefAncestor(node);
+                await revealNodeByPath(targetPath);
                 input.hide();
 
                 if (kind === 'file') {
@@ -572,9 +580,10 @@ class CustomTreeDataProvider implements
             for (const node of nodes) {
                 node.cachedTreePath = `${parentPath}/${node.label}`;
 
-                if (node.filePath) {
-                    this.pathIndex.set(node.filePath, node);
-                    this.uriToNodeMap.set(vscode.Uri.file(node.filePath).toString(), node);
+                const resolvedFsPath = this.resolveFsPath(node);
+                if (resolvedFsPath) {
+                    this.pathIndex.set(resolvedFsPath, node);
+                    this.uriToNodeMap.set(vscode.Uri.file(resolvedFsPath).toString(), node);
                 }
 
                 const displayUri = this.getDisplayUri(node);
@@ -885,9 +894,31 @@ class CustomTreeDataProvider implements
         this.refresh();
     }
 
+    private collectCollapsibleStates(nodes: ExplorerNode[], states: Map<string, vscode.TreeItemCollapsibleState>): void {
+        for (const node of nodes) {
+            if (node.type === 'group') {
+                const fsPath = this.resolveFsPath(node);
+                if (fsPath) {
+                    states.set(fsPath, node.collapsibleState ?? vscode.TreeItemCollapsibleState.Collapsed);
+                }
+            }
+
+            if (node.children) {
+                this.collectCollapsibleStates(node.children, states);
+            }
+        }
+    }
+
     // importDirectory と syncFolderRef から共用するディレクトリ再帰スキャン処理
     // skipSymlinks: folder-ref の同期時のみ true（シンボリックリンクをスキップ）
-    private scanDirectory(currentPath: string, parentNode: ExplorerNode, options: { skipSymlinks: boolean }): void {
+    private scanDirectory(
+        currentPath: string,
+        parentNode: ExplorerNode,
+        options: {
+            skipSymlinks: boolean;
+            collapsibleStates?: Map<string, vscode.TreeItemCollapsibleState>;
+        }
+    ): void {
         try {
             const items = fs.readdirSync(currentPath, { withFileTypes: true });
             for (const item of items) {
@@ -898,7 +929,9 @@ class CustomTreeDataProvider implements
                 const fullPath = path.join(currentPath, item.name);
 
                 if (item.isDirectory()) {
-                    const subGroup = this.createGroupNode(item.name, vscode.TreeItemCollapsibleState.Collapsed);
+                    const collapsibleState = options.collapsibleStates?.get(fullPath)
+                        ?? vscode.TreeItemCollapsibleState.Collapsed;
+                    const subGroup = this.createGroupNode(item.name, collapsibleState);
                     (parentNode.children ??= []).push(subGroup);
                     this.scanDirectory(fullPath, subGroup, options);
                 } else if (item.isFile()) {
@@ -919,8 +952,16 @@ class CustomTreeDataProvider implements
             return;
         }
 
+        const collapsibleStates = new Map<string, vscode.TreeItemCollapsibleState>();
+        if (node.children) {
+            this.collectCollapsibleStates(node.children, collapsibleStates);
+        }
+
         node.children = [];
-        this.scanDirectory(node.linkedPath, node, { skipSymlinks: true });
+        this.scanDirectory(node.linkedPath, node, {
+            skipSymlinks: true,
+            collapsibleStates,
+        });
         this.saveAndRefresh();
     }
 
