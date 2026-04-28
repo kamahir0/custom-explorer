@@ -57,6 +57,8 @@ interface ExplorerNode extends StoredNode {
     transientKind?: 'new-file' | 'new-folder';
 }
 
+type RuntimeTransientKind = NonNullable<ExplorerNode['transientKind']> | 'rename-file' | 'rename-folder';
+
 export function activate(context: vscode.ExtensionContext) {
     const treeDataProvider = new CustomTreeDataProvider(context);
 
@@ -148,6 +150,52 @@ export function activate(context: vscode.ExtensionContext) {
             : '空文字、絶対パス、"."、".." を含むパスは使用できません。';
     };
 
+    const parseRenameName = (input: string): string | undefined => {
+        const trimmed = input.trim();
+        if (
+            !trimmed ||
+            trimmed === '.' ||
+            trimmed === '..' ||
+            trimmed.includes('/') ||
+            trimmed.includes('\\') ||
+            path.basename(trimmed) !== trimmed
+        ) {
+            return undefined;
+        }
+        return trimmed;
+    };
+
+    const isSameFsPath = (first: string, second: string): boolean => {
+        if (process.platform === 'win32' || process.platform === 'darwin') {
+            return first.toLocaleLowerCase() === second.toLocaleLowerCase();
+        }
+        return first === second;
+    };
+
+    const validateRenameInput = (value: string, oldPath: string): string | undefined => {
+        const newName = parseRenameName(value);
+        if (!newName) {
+            return '空文字、パス区切り、"."、".." は使用できません。';
+        }
+
+        const newPath = path.join(path.dirname(oldPath), newName);
+        if (!isSameFsPath(oldPath, newPath) && fs.existsSync(newPath)) {
+            return '同名の項目が既に存在します。';
+        }
+
+        return undefined;
+    };
+
+    const getRenameSelection = (name: string, isDirectory: boolean): [number, number] => {
+        if (isDirectory) {
+            return [0, name.length];
+        }
+
+        const ext = path.extname(name);
+        const end = ext && !name.startsWith('.') ? name.length - ext.length : name.length;
+        return [0, end];
+    };
+
     const startInlineCreation = async (node: ExplorerNode, kind: 'file' | 'folder') => {
         const targetDir = await getCreationTargetDir(node);
         if (!targetDir) {
@@ -222,6 +270,135 @@ export function activate(context: vscode.ExtensionContext) {
         input.onDidHide(() => {
             if (!accepted) {
                 treeDataProvider.cancelInlineCreation();
+            }
+            input.dispose();
+        });
+
+        input.show();
+    };
+
+    const startInlineGroupRename = async (node: ExplorerNode) => {
+        if (node.type !== 'group') {
+            return;
+        }
+
+        const pendingNode = treeDataProvider.beginInlineRename(node, 'folder');
+        await treeView.reveal(pendingNode, { select: true, focus: false, expand: true });
+
+        const input = vscode.window.createInputBox();
+        let accepted = false;
+        input.ignoreFocusOut = true;
+        input.title = 'グループ名の変更';
+        input.prompt = '新しい名前を入力してください';
+        input.value = node.label;
+        input.valueSelection = [0, node.label.length];
+
+        input.onDidChangeValue(value => {
+            treeDataProvider.updateInlineRenameLabel(value);
+            input.validationMessage = value.trim() ? undefined : '空文字は使用できません。';
+        });
+
+        input.onDidAccept(() => {
+            const newName = input.value.trim();
+            if (!newName) {
+                input.validationMessage = '空文字は使用できません。';
+                return;
+            }
+
+            accepted = true;
+            treeDataProvider.commitInlineRename(newName, true);
+            input.hide();
+        });
+
+        input.onDidHide(() => {
+            if (!accepted) {
+                treeDataProvider.cancelInlineRename();
+            }
+            input.dispose();
+        });
+
+        input.show();
+    };
+
+    const startInlineFileRename = async (node: ExplorerNode) => {
+        const oldPath = treeDataProvider.resolveFsPath(node);
+        if (!oldPath) {
+            void vscode.window.showErrorMessage('名前変更対象の実パスを解決できませんでした。');
+            return;
+        }
+
+        const oldUri = vscode.Uri.file(oldPath);
+        let stat: vscode.FileStat;
+        try {
+            stat = await vscode.workspace.fs.stat(oldUri);
+        } catch {
+            void vscode.window.showErrorMessage('名前変更対象が見つかりませんでした。');
+            return;
+        }
+
+        const isDirectory = Boolean(stat.type & vscode.FileType.Directory);
+        const oldName = path.basename(oldPath);
+        const pendingNode = treeDataProvider.beginInlineRename(node, isDirectory ? 'folder' : 'file');
+        await treeView.reveal(pendingNode, { select: true, focus: false, expand: isDirectory });
+
+        const input = vscode.window.createInputBox();
+        let accepted = false;
+        input.ignoreFocusOut = true;
+        input.title = '名前の変更';
+        input.prompt = '新しい名前を入力してください';
+        input.value = oldName;
+        input.valueSelection = getRenameSelection(oldName, isDirectory);
+
+        input.onDidChangeValue(value => {
+            treeDataProvider.updateInlineRenameLabel(value);
+            input.validationMessage = validateRenameInput(value, oldPath);
+        });
+
+        input.onDidAccept(async () => {
+            const newName = parseRenameName(input.value);
+            if (!newName) {
+                input.validationMessage = validateRenameInput(input.value, oldPath);
+                return;
+            }
+
+            const newPath = path.join(path.dirname(oldPath), newName);
+            if (oldPath === newPath) {
+                accepted = true;
+                treeDataProvider.cancelInlineRename();
+                input.hide();
+                return;
+            }
+
+            input.validationMessage = validateRenameInput(input.value, oldPath);
+            if (input.validationMessage) {
+                return;
+            }
+
+            input.enabled = false;
+            input.busy = true;
+            accepted = true;
+
+            try {
+                const newUri = vscode.Uri.file(newPath);
+                await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false });
+
+                treeDataProvider.commitInlineRename(newName);
+                treeDataProvider.handleFileRename([{ oldUri, newUri }]);
+                treeDataProvider.syncFolderRefAncestor(node);
+                await revealNodeByPath(newPath);
+                input.hide();
+            } catch (error) {
+                accepted = false;
+                input.enabled = true;
+                input.busy = false;
+                const message = error instanceof Error ? error.message : String(error);
+                void vscode.window.showErrorMessage(`名前の変更に失敗しました: ${message}`);
+            }
+        });
+
+        input.onDidHide(() => {
+            if (!accepted) {
+                treeDataProvider.cancelInlineRename();
             }
             input.dispose();
         });
@@ -304,17 +481,7 @@ export function activate(context: vscode.ExtensionContext) {
             treeDataProvider.addGroup(DEFAULT_GROUP_NAME, node, vscode.TreeItemCollapsibleState.Collapsed);
         }],
 
-        ['customExplorer.renameEntry', async (node: ExplorerNode) => {
-            // folder-ref などの名前変更をブロックし、group のみに限定する
-            if (node.type !== 'group') return;
-
-            const newName = await vscode.window.showInputBox({
-                prompt: '新しい名前を入力してください',
-                value: node.label,
-            });
-            if (!newName) return;
-            treeDataProvider.renameNode(node, newName);
-        }],
+        ['customExplorer.renameEntry', (node: ExplorerNode) => startInlineGroupRename(node)],
 
         ['customExplorer.removeEntry', (node?: ExplorerNode, nodes?: ExplorerNode[]) => {
             const targets = nodes?.length ? nodes
@@ -336,7 +503,7 @@ export function activate(context: vscode.ExtensionContext) {
         ['customExplorer.newFolder', (node: ExplorerNode) => startInlineCreation(node, 'folder')],
 
         // --- 実ファイル操作 (組み込みコマンドへ委譲) ---
-        ['customExplorer.renameFile', executeStandardCommand('renameFile')],
+        ['customExplorer.renameFile', (node: ExplorerNode) => startInlineFileRename(node)],
         ['customExplorer.deleteFile', (node: ExplorerNode) => deleteEntry(node)],
 
         // --- OS連携・パス操作・開く系 (組み込みコマンドへ委譲) ---
@@ -458,6 +625,7 @@ class CustomTreeDataProvider implements
     private uriToNodeMap: Map<string, ExplorerNode> = new Map();
     private watcherMap: Map<string, vscode.FileSystemWatcher> = new Map();
     private pendingCreation?: { parent: ExplorerNode; node: ExplorerNode };
+    private pendingRename?: { node: ExplorerNode; originalLabel: string; kind: 'file' | 'folder' };
 
     public dropMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
     public dragMimeTypes = [MIME_INTERNAL, 'text/uri-list', 'text/plain'];
@@ -483,6 +651,20 @@ class CustomTreeDataProvider implements
 
     private isPendingCreationNode(node: ExplorerNode): boolean {
         return this.pendingCreation?.node.id === node.id;
+    }
+
+    private isPendingRenameNode(node: ExplorerNode): boolean {
+        return this.pendingRename?.node.id === node.id;
+    }
+
+    private getRuntimeTransientKind(node: ExplorerNode): RuntimeTransientKind | undefined {
+        if (node.transientKind) {
+            return node.transientKind;
+        }
+        if (this.isPendingRenameNode(node)) {
+            return this.pendingRename?.kind === 'file' ? 'rename-file' : 'rename-folder';
+        }
+        return undefined;
     }
 
     // --- ノード生成ファクトリ ---
@@ -615,7 +797,13 @@ class CustomTreeDataProvider implements
             if (!targetNode || this.isChildOfFolderRef(targetNode)) continue;
 
             targetNode.label = path.basename(newPath);
-            targetNode.filePath = newPath;
+            if (targetNode.type === 'folder-ref') {
+                this.disposeWatcher(targetNode.id);
+                targetNode.linkedPath = newPath;
+                this.setupWatcher(targetNode);
+            } else if (targetNode.filePath) {
+                targetNode.filePath = newPath;
+            }
             this.updatePathRecursive(targetNode, oldPath, newPath);
             isChanged = true;
         }
@@ -658,10 +846,12 @@ class CustomTreeDataProvider implements
         treeItem.id = element.id;
         treeItem.contextValue = this.resolveContextValue(element);
 
-        if (element.transientKind) {
+        const transientKind = this.getRuntimeTransientKind(element);
+        if (transientKind) {
+            const isFileKind = transientKind === 'new-file' || transientKind === 'rename-file';
             treeItem.resourceUri = this.getTreePathUri(element);
-            treeItem.description = '作成中...';
-            treeItem.iconPath = element.transientKind === 'new-file'
+            treeItem.description = transientKind.startsWith('rename-') ? '名前変更中...' : '作成中...';
+            treeItem.iconPath = isFileKind
                 ? vscode.ThemeIcon.File
                 : vscode.ThemeIcon.Folder;
             return treeItem;
@@ -687,7 +877,7 @@ class CustomTreeDataProvider implements
     }
 
     private resolveContextValue(element: ExplorerNode): string {
-        if (element.transientKind) {
+        if (this.getRuntimeTransientKind(element)) {
             return 'inline-creation';
         }
         if (element.type === 'folder-ref') {
@@ -710,6 +900,9 @@ class CustomTreeDataProvider implements
     getParent(element: ExplorerNode): ExplorerNode | undefined {
         if (this.isPendingCreationNode(element)) {
             return this.pendingCreation?.parent;
+        }
+        if (this.isPendingRenameNode(element)) {
+            return this.findParent(this.data, element);
         }
         return this.findParent(this.data, element);
     }
@@ -836,6 +1029,7 @@ class CustomTreeDataProvider implements
     }
 
     public beginInlineCreation(parent: ExplorerNode, kind: 'file' | 'folder'): ExplorerNode {
+        this.cancelInlineRename();
         this.cancelInlineCreation();
 
         const node: ExplorerNode = kind === 'file'
@@ -879,6 +1073,52 @@ class CustomTreeDataProvider implements
         const pendingNode = this.pendingCreation.node;
         this.pendingCreation = undefined;
         this.refreshParentOrRoot(pendingNode);
+    }
+
+    public beginInlineRename(node: ExplorerNode, kind: 'file' | 'folder'): ExplorerNode {
+        this.cancelInlineCreation();
+        this.cancelInlineRename();
+
+        this.pendingRename = { node, originalLabel: node.label, kind };
+        this.refreshParentOrRoot(node);
+        return node;
+    }
+
+    public updateInlineRenameLabel(value: string): void {
+        if (!this.pendingRename) {
+            return;
+        }
+
+        const label = value.trim() || this.pendingRename.originalLabel;
+        this.pendingRename.node.label = label;
+        this.refreshParentOrRoot(this.pendingRename.node);
+    }
+
+    public cancelInlineRename(): void {
+        if (!this.pendingRename) {
+            return;
+        }
+
+        const pendingNode = this.pendingRename.node;
+        pendingNode.label = this.pendingRename.originalLabel;
+        this.pendingRename = undefined;
+        this.refreshParentOrRoot(pendingNode);
+    }
+
+    public commitInlineRename(finalLabel?: string, shouldSave = false): void {
+        if (!this.pendingRename) {
+            return;
+        }
+
+        const pendingNode = this.pendingRename.node;
+        pendingNode.label = finalLabel ?? pendingNode.label;
+        this.pendingRename = undefined;
+
+        if (shouldSave) {
+            this.saveAndRefresh();
+        } else {
+            this.refreshParentOrRoot(pendingNode);
+        }
     }
 
     public syncFolderRefAncestor(node: ExplorerNode): void {
