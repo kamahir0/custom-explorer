@@ -72,12 +72,37 @@ export function activate(context: vscode.ExtensionContext) {
         treeView.title = vscode.workspace.name;
     }
 
-    const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
-        if (!editor || !editor.document || !treeView.visible) return;
+    const revealEditorInTree = async (
+        editor: vscode.TextEditor | undefined,
+        options: { focus: boolean; notify: boolean }
+    ) => {
+        if (!editor || !editor.document) {
+            if (options.notify) {
+                vscode.window.showInformationMessage('現在開いているファイルがありません。');
+            }
+            return;
+        }
+
+        if (editor.document.uri.scheme !== 'file') {
+            if (options.notify) {
+                vscode.window.showInformationMessage('現在開いているエディターはファイルシステム上のファイルではありません。');
+            }
+            return;
+        }
+
         const foundNode = treeDataProvider.findNodeByPath(editor.document.uri.fsPath);
         if (foundNode) {
-            treeView.reveal(foundNode, { select: true, focus: false, expand: true });
+            await treeView.reveal(foundNode, { select: true, focus: options.focus, expand: true });
+        } else if (options.notify) {
+            vscode.window.showInformationMessage('現在開いているファイルは Custom Explorer に追加されていません。');
         }
+    };
+
+    const syncTreeSelection = (editor: vscode.TextEditor | undefined) => {
+        if (!treeView.visible) {
+            return;
+        }
+        void revealEditorInTree(editor, { focus: false, notify: false });
     };
 
     const revealNodeByPath = async (targetPath: string) => {
@@ -496,6 +521,7 @@ export function activate(context: vscode.ExtensionContext) {
         ['customExplorer.expandRecursive', (node: ExplorerNode) => treeDataProvider.expandRecursive(node)],
         ['customExplorer.collapseAll', () => treeDataProvider.collapseRecursive(undefined)],
         ['customExplorer.expandAll', () => treeDataProvider.expandRecursive(undefined)],
+        ['customExplorer.revealActiveFile', () => revealEditorInTree(vscode.window.activeTextEditor, { focus: true, notify: true })],
         ['customExplorer.convertToGroup', (node: ExplorerNode) => treeDataProvider.convertToGroup(node)],
 
         // --- 新規作成系 (folder-ref配下で一時ノードを見せつつ拡張側で作成) ---

@@ -3,7 +3,7 @@
   "displayName": "Custom Explorer",
   "publisher": "donuts-hiratsuka",
   "description": "",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -91,6 +91,11 @@
         "icon": "$(expand-all)"
       },
       {
+        "command": "customExplorer.revealActiveFile",
+        "title": "現在開いているファイルを選択",
+        "icon": "$(target)"
+      },
+      {
         "command": "customExplorer.convertToGroup",
         "title": "グループに変換",
         "icon": "$(link-external)"
@@ -160,6 +165,11 @@
           "command": "customExplorer.collapseAll",
           "when": "view == custom-explorer-view",
           "group": "navigation@3"
+        },
+        {
+          "command": "customExplorer.revealActiveFile",
+          "when": "view == custom-explorer-view",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
